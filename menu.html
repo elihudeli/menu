@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ЕлиХудели · меню дня</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Crect width=%2264%22 height=%2264%22 rx=%2214%22 fill=%22%235da83c%22/%3E%3Ctext x=%2231%22 y=%2250%22 text-anchor=%22middle%22 font-family=%22Arial Black,sans-serif%22 font-weight=%22900%22 font-size=%2233%22 fill=%22%23fff%22%3E%D0%95%D0%A5%3C/text%3E%3C/svg%3E">
+<style>
+  html, body { margin: 0; background: #f2f3ef; font-family: "Segoe UI", Roboto, Arial, sans-serif; color: #1d1d1b; }
+  main { max-width: 520px; margin: 0 auto; padding: 14px 12px 28px; }
+  #card svg { width: 100%; height: auto; display: block; background: #fff; border-radius: 14px; box-shadow: 0 2px 14px rgba(0,0,0,.08); }
+  .hint { font-size: 13px; color: #6f6f6a; text-align: center; margin-top: 12px; }
+  textarea { width: 100%; box-sizing: border-box; min-height: 160px; font: 14px/1.4 inherit; padding: 10px; border-radius: 10px; border: 1px solid #ccc; }
+  @media (prefers-color-scheme: dark) { html, body { background: #15181d; } .hint { color: #9ca3ad; } }
+</style>
+</head>
+<body>
+<main>
+  <div id="card"></div>
+  <div class="hint" id="hint"></div>
+</main>
+<script>
+/* Меню из QR-кода: текст меню лежит в самой ссылке (после #), страница только рисует его — ничего не грузит из сети.
+   Формат текста (он же виден, если отсканировать QR без этой страницы):
+     ЕлиХудели · 900 ккал · 30.10.2026
+     <пустая строка>
+     Завтрак 7:00-10:00
+     Блюдо (может быть несколько строк)
+     Ккал 255,2 · Б 18,3 · Ж 9,6 · У 23,9
+     <пустая строка> … следующий приём пищи …
+     Итого: 900 ккал
+     Приятного аппетита! */
+function parseMenu(text) {
+  const blocks = String(text).replace(/\r/g, '').trim().split(/\n\s*\n/);
+  const head = blocks.shift().split('\n')[0];
+  const [, prog = '', date = ''] = head.split('·').map(s => s.trim());
+  const meals = [], tail = [];
+  for (const b of blocks) {
+    const lines = b.split('\n').map(s => s.trim()).filter(Boolean);
+    if (!lines.length) continue;
+    if (/^Итого/i.test(lines[0]) || lines.length === 1) { tail.push(...lines); continue; }
+    const h = lines.shift().match(/^(.*?)(?:\s+(\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}))?$/);
+    const kb = /^Ккал/i.test(lines[lines.length - 1]) ? lines.pop() : '';
+    meals.push({ name: h[1], time: h[2] || '', dishes: lines, kbju: kb });
+  }
+  return { prog, date, meals, tail };
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function wrap(s, max) {
+  const out = []; let line = '';
+  for (const w of String(s).split(' ')) {
+    if (line && (line + ' ' + w).length > max) { out.push(line); line = w; } else line = line ? line + ' ' + w : w;
+  }
+  if (line) out.push(line);
+  return out;
+}
+// векторная карточка в стиле меню ЕлиХудели: логотип и текст справа, зелёная линия под заголовком
+function menuSvg(m) {
+  const W = 420, R = 392, serif = 'Cambria, Georgia, "Times New Roman", serif', sans = '"Segoe UI", Roboto, Arial, sans-serif';
+  const parts = [];
+  let y = 58;
+  parts.push(`<text x="${R}" y="${y}" text-anchor="end" font-family="${sans}" font-weight="700" font-size="30" letter-spacing="-.5">ЕлиХудели</text>`);
+  parts.push(`<g transform="translate(${R - 40} ${y - 37}) scale(.62)"><path d="M4 20C4 10 10 4 21 3c0 11-6 17-15 17z" fill="#5da83c"/><path d="M5 19C9 14 13 10 18 6" stroke="#fff" stroke-width="1.4" fill="none" stroke-linecap="round"/></g>`);
+  y += 44;
+  const prog = m.prog.replace(/\s*ккал/i, '');
+  parts.push(`<text x="${R}" y="${y}" text-anchor="end" font-family="${serif}" font-size="17" letter-spacing="3">${esc((prog ? prog + ' ' : '') + 'МЕНЮ ДНЯ ' + m.date.replace(/\./g, '/'))}</text>`);
+  y += 10;
+  parts.push(`<rect x="28" y="${y}" width="${R - 28}" height="2.6" fill="#5da83c"/>`);
+  y += 18;
+  for (const meal of m.meals) {
+    y += 22;
+    parts.push(`<text x="${R}" y="${y}" text-anchor="end" font-family="${serif}" font-size="15" letter-spacing="2.5">${esc((meal.name + (meal.time ? ' ' + meal.time : '')).toUpperCase())}</text>`);
+    for (const d of meal.dishes) for (const ln of wrap(d, 40)) {
+      y += 20;
+      parts.push(`<text x="${R}" y="${y}" text-anchor="end" font-family="${sans}" font-size="14">${esc(ln)}</text>`);
+    }
+    if (meal.kbju) {
+      y += 18;
+      parts.push(`<text x="${R}" y="${y}" text-anchor="end" font-family="${sans}" font-size="12.5" fill="#444">${esc(meal.kbju.replace(/\s*·\s*/g, '  '))}</text>`);
+    }
+    y += 6;
+  }
+  for (const t of m.tail) {
+    y += /^Итого/i.test(t) ? 28 : 34;
+    parts.push(/^Итого/i.test(t)
+      ? `<text x="${R}" y="${y}" text-anchor="end" font-family="${sans}" font-size="13" font-weight="600">${esc(t)}</text>`
+      : `<text x="${R}" y="${y}" text-anchor="end" font-family="${serif}" font-size="17">${esc(t)}</text>`);
+  }
+  const H = y + 34;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Меню дня">${parts.join('')}</svg>`;
+}
+const unb64 = s => { const b = atob(s.replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, c => c.charCodeAt(0)); };
+// «z1.» — меню сжато (deflate) в кодировке windows-1251, так QR получается меньше; иначе — текст в UTF-8
+async function fromHash() {
+  const h = location.hash.slice(1);
+  if (!h) return '';
+  try {
+    if (h.startsWith('z1.')) {
+      const st = new Blob([unb64(h.slice(3))]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      return new TextDecoder('windows-1251').decode(await new Response(st).arrayBuffer());
+    }
+    return new TextDecoder().decode(unb64(h));
+  } catch { return decodeURIComponent(h); }
+}
+async function show() {
+  const t = await fromHash();
+  if (!t) { document.getElementById('hint').textContent = 'Отсканируйте QR-код на пакете — здесь появится меню дня.'; return; }
+  document.getElementById('card').innerHTML = menuSvg(parseMenu(t));
+  document.getElementById('hint').textContent = 'Меню записано прямо в QR-коде — страница работает без интернета.';
+}
+window.addEventListener('hashchange', show);
+show();
+// после первого открытия страница сохраняется в телефоне и открывается без интернета
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('menu-sw.js').catch(() => {});
+</script>
+</body>
+</html>
