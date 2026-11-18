@@ -461,7 +461,7 @@ async function syncTick() {
   const prev = S.sync;
   S.sync = st;
   if (st.mode === 'blocked') { showBlocked(); return; }
-  if (prev && st.pulled !== prev.pulled && !dirty) await reloadFromServer();
+  if (st.pulled !== (prev ? prev.pulled : 0) && !dirty) await reloadFromServer(); // и первая база, пришедшая до первой проверки окна
   if (st.needMerge) await syncMerge(st.needMerge);
   pinCheck();
   if (st.mode === 'owner' && !S.startBackup && ['om', 'manager', 'developer'].includes(role())) {
@@ -469,7 +469,11 @@ async function syncTick() {
     api('POST', '/api/sync/backup', JSON.stringify({ reason: 'start' })).catch(() => { S.startBackup = false; });
   }
   showNews(st.news);
-  if (st.updated && !S.updToast) { S.updToast = true; toast('Установлена новая версия программы — закройте программу и откройте её заново', 'ok', 20000); }
+  if (st.updated && !S.updToast) { // новая версия скачалась сама — зелёное окошко «Обновить сейчас»
+    S.updToast = true;
+    if (window.EHAndroid) updateBox({ title: 'Вышло обновление программы', lines: (st.news && st.news.lines) || [], go: () => location.reload(), later: () => { S.updToast = false; } });
+    else checkAppUpdate();
+  }
   if (!prev || prev.mode !== st.mode || JSON.stringify(prev.holder) !== JSON.stringify(st.holder)) {
     if (prev && prev.mode === 'viewer' && st.mode === 'owner') toast('Программа теперь у вас — можно работать', 'ok', 6000);
     if (prev && prev.mode === 'owner' && st.mode === 'viewer') toast(viewerMsg(), 'bad', 8000);
@@ -478,18 +482,12 @@ async function syncTick() {
 }
 // «Что нового»: после обновления программы каждый сотрудник на этом компьютере видит это окно один раз
 function showNews(n) {
-  if (!n || !n.id || S.newsShown || $('.modal')) return;
+  if (!n || !n.id || S.newsShown || $('.modal') || $('#updBox')) return;
   const key = 'eh_news_' + (operator() || 'all');
   if (lsGet(key) === n.id) return;
   S.newsShown = true;
-  const note = String(n.version || '').replace(/^\S+\s*/, ''); // без даты публикации
-  openModal({
-    title: 'Что нового в программе',
-    body: `${note ? `<p><b>${esc(note)}</b></p>` : ''}${(n.lines || []).length ? `<ul class="news-list">${n.lines.map(l => `<li>${esc(l.replace(/^\*\s*/, ''))}</li>`).join('')}</ul>`
-      : '<p class="muted">Программа обновлена.</p>'}`,
-    foot: '<button class="btn btn-green" data-m="ok">Понятно</button>',
-    onMount(root) { $('[data-m="ok"]', root).addEventListener('click', () => { lsSet(key, n.id); closeModal(); }); },
-  });
+  updateBox({ title: 'Программа обновлена — что нового', note: String(n.version || '').replace(/^\S+\s*/, ''), lines: n.lines || [],
+    goText: 'Понятно', go: (_b, close) => { lsSet(key, n.id); close(); } });
 }
 // устройство заблокировала управляющая — программа закрыта, база и ключи на нём уже стёрты
 function showBlocked() {
