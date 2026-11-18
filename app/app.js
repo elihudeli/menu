@@ -618,6 +618,7 @@ function persist() {
 }
 async function doSave() {
   if (saving) { saveTimer = setTimeout(doSave, 300); return; }
+  if (readerOnly()) { dirty = false; setSaveState(''); reloadFromServer(); return; } // читатель не сохраняет — база только из облака
   saving = true;
   dirty = false;
   try {
@@ -7292,15 +7293,12 @@ async function checkAppUpdate() {
   if (WEB_VER === null) WEB_VER = r.web;
   if (!r.available && !r.restart && r.web === WEB_VER) return;
   UPD_SHOWN = true;
-  openModal({
-    title: 'Обновите программу',
-    body: `<p>${r.available ? `Вышла новая версия программы${r.version ? ` <b>${esc(r.version)}</b>` : ''}.` : 'Новая версия программы уже скачана.'}
-      Обновите перед работой — это несколько секунд, все данные сохранятся.</p>`,
-    foot: '<button class="btn" data-m="later">Позже</button><button class="btn btn-green" data-m="go">Обновить сейчас</button>',
-    onMount(root) {
-      $('[data-m="later"]', root).addEventListener('click', () => { closeModal(); setTimeout(() => { UPD_SHOWN = false; }, 30 * 60e3); });
-      $('[data-m="go"]', root).addEventListener('click', async e => {
-        const b = e.target;
+  const note = String(r.version || '').replace(/^\S+\s*/, ''); // без даты публикации
+  updateBox({
+    title: r.available ? 'Вышло обновление программы' : 'Новая версия уже скачана',
+    note, lines: r.lines || (S.sync && S.sync.news && S.sync.news.lines) || [],
+    later: () => setTimeout(() => { UPD_SHOWN = false; }, 30 * 60e3),
+    go: async b => {
         b.disabled = true;
         b.textContent = 'Сохраняю…';
         for (let i = 0; i < 40 && (dirty || saving); i++) await new Promise(res => setTimeout(res, 250)); // сначала дописать базу
@@ -7316,9 +7314,23 @@ async function checkAppUpdate() {
         }
         dirty = false;
         location.reload();
-      });
     },
   });
+}
+// зелёное окошко обновления (в углу, не мешает работать): что нового и кнопка
+function updateBox({ title, note = '', lines = [], go, goText = 'Обновить сейчас', later }) {
+  $('#updBox')?.remove();
+  const el = document.createElement('div');
+  el.id = 'updBox';
+  el.className = 'upd-box no-print';
+  const L = lines.map(l => String(l).replace(/^\*\s*/, '')).filter(Boolean);
+  el.innerHTML = `<div class="upd-h"><b>${esc(title)}</b>${later ? '<button class="upd-x" data-u="later" title="Позже">×</button>' : ''}</div>
+    ${note ? `<div class="upd-note">${esc(note)}</div>` : ''}
+    ${L.length ? `<ul>${L.slice(0, 6).map(l => `<li>${esc(l)}</li>`).join('')}</ul>${L.length > 6 ? `<div class="upd-more">и ещё ${L.length - 6}</div>` : ''}` : ''}
+    <button class="upd-go" data-u="go">${esc(goText)}</button>`;
+  document.body.appendChild(el);
+  $('[data-u="go"]', el).addEventListener('click', e => go(e.target, () => el.remove()));
+  $('[data-u="later"]', el)?.addEventListener('click', () => { el.remove(); later(); });
 }
 
 /* ---------------------------------------------------------------- старт */
