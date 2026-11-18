@@ -7,7 +7,7 @@
    Настройка приходит в ссылке из «Установщика» (#k=…), зашифрованной PIN-кодом.
    ===================================================================== */
 (() => {
-  const LOCK_STALE = 60, BEAT = 20, POLL = 10, PUSH_GAP = 5, REG_EVERY = 1800, KEEP_AUTO = 12, WIPE_DAYS = 30; // как в sync.py
+  const LOCK_STALE = 90, BEAT = 20, POLL = 10, PUSH_GAP = 5, REG_EVERY = 1800, KEEP_AUTO = 12, WIPE_DAYS = 30; // как в sync.py
   const DEFAULT_MODEL = 'gemini-3.5-flash-lite', OPENAI_URL = 'https://api.openai.com/v1';
   const F = window.fetch.bind(window);
   const enc = new TextEncoder(), dec = new TextDecoder();
@@ -80,7 +80,7 @@
   let headSha = null, headEnt = null, headState = null;
   let lastBeat = 0, lastPush = 0, lastReg = 0, tokenExp = '', inst = '', role = '';
   const st = { mode: 'off', holder: null, rev: 0, pulled: 0, needMerge: 0, message: '', lastSync: '', updated: 0, published: '' };
-  let news = null, dirtyNow = false;
+  let news = null, dirtyNow = false, seen = { key: null, at: 0 };
 
   const saveLocal = () => store.writeJson('sync.json', local);
   const secrets = () => store.json('secrets.json');
@@ -219,8 +219,11 @@
     }
     const lk = state.lock, t = now();
     const mine = !!lk && lk.machine === local.machine;
-    const free = !lk || t - (+lk.beat || 0) > LOCK_STALE;
+    const key = lk ? lk.machine + '|' + lk.beat : ''; // «брошена» — сигнал владельца не менялся LOCK_STALE по нашим часам
+    if (key !== seen.key) seen = { key, at: t };
+    const free = !lk || t - seen.at > LOCK_STALE;
     if (isBlocked(state)) { await blockMe(state, mine); return; }
+    if ((state.removed || []).some(b => (b.ids || []).some(id => myIds().has(id)))) { await blockMe(state, mine, 'Вас удалили из программы.'); return; }
     registerMaybe();
     const rrev = state.rev || 0;
     st.rev = rrev;
@@ -229,7 +232,7 @@
       if (await localDirty()) st.needMerge = rrev;
       else { await pull(); st.needMerge = 0; }
     }
-    const holderOf = () => ({ ...lk, ago: Math.round(t - (+lk.beat || 0)) });
+    const holderOf = () => ({ ...lk, ago: Math.round(t - seen.at) });
     if (reader && !mine) { Object.assign(st, { mode: 'viewer', holder: free ? null : holderOf() }); return; }
     if (free && !mine && holdOff) { Object.assign(st, { mode: 'viewer', holder: null }); return; }
     if (mine || free) {
@@ -298,28 +301,33 @@
     out.sort((a, b) => String(b.seen || '').localeCompare(String(a.seen || '')));
     return { devices: out, blocked: (await remoteState()).blocked || [], machine: local.machine };
   }
-  async function block(ids, label, on) {
+  async function block(ids, label, on, key = 'blocked') {
     const want = new Set((ids || []).map(String).filter(Boolean));
     if (!want.size) throw new Error('Не указано устройство');
     if (on && [...myIds()].some(x => want.has(x))) throw new Error('Своё устройство заблокировать нельзя');
     for (let a = 0; ; a++) {
       if (!await readRemote(true)) throw new Error('Облако ещё пустое');
       const s2 = { ...headState };
-      s2.blocked = (s2.blocked || []).filter(b => !(b.ids || []).some(x => want.has(x)));
-      if (on) s2.blocked.push({ ids: [...want], label: String(label).slice(0, 120), at: nowIso(), by: who || '—' });
-      try { await write(s2, (on ? 'Заблокировано: ' : 'Разблокировано: ') + label, null, false); return; } catch (e) {
+      s2[key] = (s2[key] || []).filter(b => !(b.ids || []).some(x => want.has(x)));
+      if (on) s2[key].push({ ids: [...want], label: String(label).slice(0, 120), at: nowIso(), by: who || '—' });
+      try { await write(s2, (key === 'removed' ? 'Удалён пользователь: ' : on ? 'Заблокировано: ' : 'Разблокировано: ') + label, null, false); return; } catch (e) {
         if (e.code !== 422 || a >= 2) throw e;
         headSha = null;
       }
     }
   }
-  async function blockMe(state, mine) {
+  async function blockMe(state, mine, why = 'Доступ к программе закрыт управляющей.') {
     try { if (mine) await write({ ...state, lock: null }, 'Программа свободна (устройство заблокировано)', null, false); } catch { /* всё равно стираем */ }
-    await store.del('base.json');
-    await store.del('secrets.json');
-    Object.assign(local, { blocked: nowIso(), rev: 0, hash: '' });
-    await saveLocal();
-    Object.assign(st, { mode: 'blocked', holder: null, message: 'Доступ к программе закрыт управляющей' });
+    await wipeAll(why);
+  }
+  // сайт-версия: заблокировали или удалили — стираем всё (база, ключи, настройка) и возвращаемся к экрану ссылки;
+  // метка этой ссылки запоминается — старая ссылка больше не пустит, новая из «Установщика» — пустит
+  async function wipeAll(why) {
+    const gone = [...new Set([...(store.json('gone.json').inst || []), inst || store.json('local.json').inst].filter(Boolean))];
+    for (const k of [...mem.keys()]) await store.del(k);
+    await store.writeJson('gone.json', { inst: gone, msg: why });
+    location.replace(location.pathname); // без старой ссылки в адресе
+    await new Promise(() => {});
   }
 
   /* ---------------------------------------------------------------- отдать / взять программу, копии базы */
@@ -436,6 +444,7 @@
       case 'take': holdOff = false; await serial(step); break;
       case 'devices': return { ...status(), ...await devices() };
       case 'block': await serial(() => block(q.ids, q.label || '', q.on !== false)); break;
+      case 'remove': await serial(() => block(q.ids, q.label || '', true, 'removed')); break;
       case 'backup': return { ...status(), name: await serial(() => cloudBackup(q.reason || 'auto')) };
       case 'backups': return { ...status(), backups: await serial(cloudBackups) };
       case 'restore': await serial(() => cloudRestore(String(q.name || ''))); break;
@@ -618,10 +627,12 @@
   }
   async function setup() {
     const kOf = s => (String(s).match(/[#&]k=([\w-]+)/) || [])[1];
-    let k = kOf(location.hash);
-    if (!k) { // ярлык открылся без личной части ссылки — даём вставить её
+    const gone = store.json('gone.json');
+    let k = gone.msg ? '' : kOf(location.hash), note = gone.msg ? `${gone.msg} Если вам дали новую ссылку — вставьте её.` : '';
+    for (;;) {
+    if (!k) { // ярлык открылся без личной части ссылки (или старая больше не действует) — даём вставить ссылку
       k = await new Promise(done => {
-        const el = screen(`${LOGO}<div style="margin-bottom:12px">Вставьте ссылку, которую вам прислали из «Установщика» (нажмите и удерживайте поле → «Вставить»):</div>
+        const el = screen(`${LOGO}${note ? `<div style="color:#c0392b;margin-bottom:10px">${note}</div>` : ''}<div style="margin-bottom:12px">Вставьте ссылку, которую вам прислали из «Установщика» (нажмите и удерживайте поле → «Вставить»):</div>
           <textarea id="iosLinkIn" rows="4" style="width:100%;font-size:13px;padding:8px;border:1px solid #ccc;border-radius:10px"></textarea>
           <div id="iosLinkErr" style="color:#c0392b;min-height:20px;margin-top:6px"></div>
           <button id="iosLinkGo" style="font-size:17px;padding:10px 28px;border:0;border-radius:10px;background:#5da83c;color:#fff">Дальше</button>`);
@@ -631,8 +642,12 @@
         };
       });
     }
-    if (!standalone() && /iPhone|iPad/.test(navigator.userAgent)) await askInstall();
-    const cfg = await askPin(k);
+    if (!standalone() && /iPhone|iPad/.test(navigator.userAgent) && !gone.msg) await askInstall();
+    var cfg = await askPin(k);
+    if (!(gone.inst || []).includes(cfg.inst)) break;
+    k = ''; note = 'Эта ссылка больше не действует.'; // заблокированная / удалённая ссылка
+    }
+    await store.del('gone.json');
     await store.writeJson('local.json', { role: cfg.role || 'om', roleLocked: true, operator: cfg.operator || '', inst: cfg.inst || '', pin: cfg.pin || '', readerOnly: !!cfg.readerOnly });
     const sec = {};
     for (const [key, v] of Object.entries(cfg)) if (/^(github|gemini|ai)/.test(key) && typeof v === 'string' && v) sec[key] = v;
@@ -647,6 +662,7 @@
         return;
       }
       await storeOpen();
+      if (store.json('sync.json').blocked) await wipeAll('Доступ к программе закрыт управляющей.'); // заблокировали в старой версии — сбрасываем
       if (!store.read('local.json')) await setup();
       document.getElementById('iosGate')?.remove();
       local = store.json('sync.json');
