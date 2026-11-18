@@ -784,6 +784,8 @@ function viewClients() {
         <a data-act="findReturners"><b>Найти возвратников</b><span>заморожены на неопределённый срок или больше года — возврат одной кнопкой</span></a>
         <a data-act="clientsTemplate"><b>Пустая таблица для новых клиентов</b><span>заполните её в Excel и загрузите обратно пунктом выше</span></a>
       </div></div>
+    <button class="btn" data-act="transferDays" title="Клиент отдаёт часть оставшихся дней другому клиенту (или новому) — это не продажа">⇆ Передача дней</button>
+    <button class="btn" data-act="chatEdits" title="Вставьте сообщения менеджеров из чата — ИИ внесёт правки клиентам и добавит новых, спросив перед каждым">Правки из чата (ИИ)</button>
     <button class="btn btn-green" data-act="newClient">+ Новый клиент</button>
   </div>
   <div class="stats">
@@ -911,7 +913,7 @@ function filteredClients() {
   const pd = String(f.phone || '').replace(/\D/g, '');
   const arr = db.clients.filter(c => {
     const i = CINFO.get(c.id);
-    if (f.status !== 'all' && cliKey(i) !== f.status) return false;
+    if (f.status !== 'all' && !q && !pd && cliKey(i) !== f.status) return false; // поиск — по всей базе, не только по выбранному статусу
     const m = i.main;
     if (f.courier === '__none') { if (clCour(c)) return false; } else if (f.courier && clCour(c) !== f.courier) return false;
     if (f.manager === '__none') { if (clMan(c)) return false; } else if (f.manager === '__gone') { const n = clMan(c); if (!n || db.lists.managers.includes(n)) return false; }
@@ -1037,6 +1039,7 @@ function clientModalParts(cl) {
       <div class="progress" style="width:100%;height:8px;margin:8px 0 14px"><i style="width:${pct}%"></i></div>
       <div class="kv">
         <b>Период</b><span>${fmt(k.start)} — ${fmt(k.end)} (${o.days} дн.)</span>
+        ${o.transfer ? `<b>Передача дней</b><span>от ${esc(o.transfer.fromName || 'другого клиента')} · не продажа</span>` : ''}
         ${o.stages ? `<b>Этапы</b><span>${o.stages.map((x, i) => { const cur = stageAt(o, done); return `<span class="tag ${cur && cur.i === i && st !== 'future' ? 'first' : ''}">${i + 1}. ${esc(x.label)} · ${x.days} дн.</span>`; }).join(' ')}</span>` : ''}
         <b>Дни доставки</b><span>${esc(orderDaysText(o))}${o.dayMode === 'custom' ? ` · выбрано ${k.list.length} из ${o.days}` : ''}</span>
         <b>Праздники</b><span>${esc(holidayText(o))}</span>
@@ -1058,7 +1061,9 @@ function clientModalParts(cl) {
       <div class="actions">
         <button class="btn btn-sm" data-act="editOrder" data-id="${esc(o.id)}">✎ Изменить</button>
         ${o.dayMode === 'custom' && isOpen ? `<button class="btn btn-sm btn-green" data-act="pickDays" data-id="${esc(o.id)}">Выбрать дни</button>` : ''}
-        ${isOpen ? `<button class="btn btn-sm" data-act="freezeOrder" data-id="${esc(o.id)}">Заморозка (календарь)</button>
+        ${isOpen ? `<button class="btn btn-sm" data-act="changeProg" data-id="${esc(o.id)}" title="С выбранной даты — другая программа; доставленные дни остаются на прежней">⇄ Сменить программу</button>
+        <button class="btn btn-sm" data-act="transferDays" data-id="${esc(o.id)}" title="Отдать часть оставшихся дней другому клиенту (или новому) — это не продажа">⇆ Передать дни</button>
+        <button class="btn btn-sm" data-act="freezeOrder" data-id="${esc(o.id)}">Заморозка (календарь)</button>
         <button class="btn btn-sm" data-act="skipOrder" data-id="${esc(o.id)}">Отдельные дни</button>
         <button class="btn btn-sm" data-act="shiftsOrder" data-id="${esc(o.id)}" title="Календарь: закрасить дни — утро (жёлтый), вечер (коричневый), оба — 2 пакета">Смены доставки</button>
         <button class="btn btn-sm" data-act="stopOrder" data-id="${esc(o.id)}">${k.indefFrom !== undefined ? '▶ Возобновить' : 'Остановить'}</button>
@@ -1072,7 +1077,7 @@ function clientModalParts(cl) {
     const st = orderState(x, TODAY);
     return `<tr><td class="nowrap">${fmt(k.start)} — ${fmt(k.end)}</td><td>${esc(progLabel(x.program))}</td>
       <td>${x.days}</td><td>${esc(orderDaysText(x))}</td><td>${esc(x.courier)}</td><td>${esc(x.manager)}</td>
-      <td><span class="tag ${OSTATE[st][1]}">${OSTATE[st][0]}</span>${x.freezes.length ? ' <span class="tag frozen">заморозки</span>' : ''}</td>
+      <td><span class="tag ${OSTATE[st][1]}">${OSTATE[st][0]}</span>${x.freezes.length ? ' <span class="tag frozen">заморозки</span>' : ''}${x.transfer ? ` <span class="tag" title="от ${esc(x.transfer.fromName || 'другого клиента')}">передача</span>` : ''}</td>
       <td class="nowrap right">
         <button class="btn btn-icon btn-sm" data-act="editOrder" data-id="${esc(x.id)}" title="Изменить">✎</button>
         <button class="btn btn-icon btn-sm" data-act="freezeOrder" data-id="${esc(x.id)}" title="Заморозка">‖</button>
@@ -1128,6 +1133,388 @@ function clientModalParts(cl) {
       <button class="btn" data-act="closeModal">Закрыть</button>
       <button class="btn btn-green" data-act="newOrder" data-id="${esc(cl.id)}">+ Добавить программу</button>`,
   };
+}
+
+/* ---------------------------------------------------------------- правки из чата менеджеров (ИИ)
+   Вставили сообщения из рабочего чата («Тожиходжаева Махизар — добавить аллерген: исключить утку», новый клиент с адресом и программой) —
+   ИИ разбирает, кому что поменять и кого добавить; по каждому клиенту программа пишет «сделаю так-то» и спрашивает:
+   «Да» — применить, «Нет» — открыть карточку клиента (или форму нового клиента), чтобы поправить руками. */
+const nameTokens = s => soundKey(s).split(' ').filter(Boolean);
+function findClientsByName(name, phone) {
+  const pk = phoneKey(phone), q = nameTokens(name);
+  const hit = (a, b) => a === b || (a.length >= 4 && b.length >= 4 && lev(a, b) <= (Math.min(a.length, b.length) >= 7 ? 2 : 1));
+  const out = [];
+  for (const c of db.clients) {
+    if (pk && phoneKey(c.phone) === pk) { out.push([100, c]); continue; }
+    if (!q.length) continue;
+    const t = nameTokens(c.name), m = q.filter(w => t.some(x => hit(w, x))).length;
+    if (m === q.length || (q.length > 2 && m >= 2)) out.push([m * 10 + (m === t.length ? 5 : 0), c]);
+  }
+  const live = c => (['active', 'frozen'].includes(cliKey(CINFO.get(c.id))) ? 1 : 0);
+  return out.sort((a, b) => b[0] - a[0] || live(b[1]) - live(a[1])).map(x => x[1]);
+}
+const openOrdersOf = cl => (CINFO.get(cl.id)?.orders || []).filter(o => !['done', 'stopped'].includes(orderState(o, TODAY)));
+const lastOrderOf = cl => (CINFO.get(cl.id)?.orders || []).slice().sort((a, b) => calc(b).end - calc(a).end)[0] || null;
+// «АЛИНАААААААА», «Умид ОМ» → ответственный из списка
+const managerOf = s => { const k = nameTokens(s)[0]; return k ? db.lists.managers.find(m => nameTokens(m)[0] === k) || '' : ''; };
+const isoOk = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || '')) && Number.isFinite(dn(s));
+
+// что сделаем с клиентом: [{t: текст, fn: применить | null, cls: '' | 'warn' | 'muted'}]
+function planChatEdit(cl, changes) {
+  const steps = [];
+  const os = openOrdersOf(cl), main = os[0] || null;
+  const say = (t, fn = null, cls = '') => steps.push({ t, fn, cls });
+  for (const ch of changes || []) {
+    const v = String(ch.value ?? ch.text ?? '').trim();
+    switch (ch.type) {
+      case 'allergen_add':
+        if (!v) break;
+        if (os.length && os.every(o => nameKey(o.allergen).includes(nameKey(v)))) say(`Аллерген / исключения: «${esc(v)}» уже записано — менять нечего`, null, 'muted');
+        else if (os.length) {
+          say(`Аллерген / исключения${os.length > 1 ? ` (во всех ${os.length} действующих заказах)` : ''}: добавить «<b>${esc(v)}</b>»`, () => {
+            for (const o of os) if (!nameKey(o.allergen).includes(nameKey(v))) { o.allergen = [String(o.allergen || '').trim(), v].filter(Boolean).join('\n'); touch(o); }
+          });
+        } else say(`Действующего заказа нет — запишу в комментарий клиента: «<b>${esc(v)}</b>»`, () => { cl.comment = [cl.comment, v].filter(Boolean).join('\n'); touch(cl); });
+        break;
+      case 'cook_from': {
+        if (ch.done) break; // уже учтено в заморозке («заморозка 17.11, готовка 18.11»)
+        const d = dn(ch.date || v) + 1; // «готовка 18.11» — фасовка 18-го готовит на 19-е: доставка с 19-го
+        if (!Number.isFinite(d)) { say('Не понял дату «на готовку»', null, 'warn'); break; }
+        const o = os.find(x => x.freezes.some(f => dn(f.from) <= d && d <= dn(f.to))) || main || lastOrderOf(cl);
+        if (!o) { say(`Доставка с ${fmt(d)}: заказов нет — оформите заказ`, null, 'warn'); break; }
+        const k = calc(o), fz = o.freezes.find(f => dn(f.from) <= d && d <= dn(f.to));
+        if (o.stopped) say(`Доставка с ${fmt(d)}: заказ завершён возвратом ${fmt(dn(o.stopped))} — возобновите в карточке`, null, 'warn');
+        else if (fz) {
+          say(`Готовка <b>${fmt(d - 1)}</b> (на ${fmt(d)}): снять заморозку (была ${fmt(dn(fz.from))} — ${dn(fz.to) - dn(fz.from) > 730 ? 'бессрочно' : fmt(dn(fz.to))})`, () => {
+            if (d - 1 < dn(fz.from)) o.freezes = o.freezes.filter(f => f !== fz); else fz.to = isoOf(d - 1);
+            touch(o);
+          });
+        } else if (k.start > TODAY && k.start !== d) say(`Доставка с <b>${fmt(d)}</b>: перенести начало заказа ${fmt(k.start)} → ${fmt(d)}`, () => { o.start = isoOf(d); touch(o); });
+        else if (d > k.end) say(`Доставка с ${fmt(d)}: заказ закончился ${fmt(k.end)} — нужно продление («↻ Продлить» в карточке)`, null, 'warn');
+        else if (k.set.has(d) || k.start === d) say(`Доставка с ${fmt(d)}: уже стоит в готовке — менять нечего`, null, 'muted');
+        else say(`Доставка с ${fmt(d)}: по графику заказа это не день доставки — проверьте дни доставки`, null, 'warn');
+        break;
+      }
+      case 'freeze': {
+        // даты в чате — дни ФАСОВКИ: «заморозка 17.11» — 17-го не готовим на 18-е (нет доставки 18-го);
+        // «готовка 18.11» рядом — 18-го снова готовим на 19-е, значит без доставки по 18-е включительно
+        const cook = (changes || []).find(c => c.type === 'cook_from' && Number.isFinite(dn(c.date || c.value)));
+        const a = dn(ch.from || v) + 1;
+        let b = ch.to ? dn(ch.to) + 1 : NaN;
+        if (cook && dn(cook.date || cook.value) + 1 > a) { b = dn(cook.date || cook.value); cook.done = true; }
+        if (!Number.isFinite(a)) { say('Не понял даты заморозки', null, 'warn'); break; }
+        if (!main) { say('Заморозка: действующего заказа нет', null, 'warn'); break; }
+        say(Number.isFinite(b) ? `Заморозка: фасовка не готовит с <b>${fmt(a - 1)}</b>${cook && cook.done ? `, готовка снова <b>${fmt(b)}</b> (на ${fmt(b + 1)})` : ''} — без доставки <b>${a === b ? fmt(a) : fmt(a) + ' — ' + fmt(b)}</b>`
+          : `Остановить: фасовка не готовит с <b>${fmt(a - 1)}</b> (без доставки с ${fmt(a)}) на неопределённый срок`, () => {
+          main.freezes = normFreezes([...main.freezes, { from: isoOf(a), to: isoOf(Number.isFinite(b) && b >= a ? b : a + INDEF_DAYS) }]);
+          touch(main);
+        });
+        break;
+      }
+      case 'time': {
+        const t = /веч/i.test(v) ? 'вечер' : /утр/i.test(v) ? 'утро' : '';
+        const list = os.filter(o => o.time !== t);
+        if (!t) say(`Не понял время: «${esc(v)}»`, null, 'warn');
+        else if (!list.length) say(`Время уже ${t}`, null, 'muted');
+        else say(`Время доставки: ${esc(list[0].time)} → <b>${t}</b>`, () => { for (const o of list) { o.time = t; touch(o); } });
+        break;
+      }
+      case 'program': {
+        const p = canonProgram(normProg(v)), d = isoOk(ch.from) ? dn(ch.from) : TODAY + 1;
+        if (!p) break;
+        if (!main) { say(`Сменить программу на ${esc(progLabel(p))}: действующего заказа нет`, null, 'warn'); break; }
+        say(`Сменить программу: ${esc(progLabel(main.program))} → <b>${esc(progLabel(p))}</b> с ${fmt(d)}`, () => { const e = changeProgramFrom(main, p, d); if (e) toast(e, 'bad', 6000); });
+        break;
+      }
+      case 'days_add': {
+        const n = parseInt(v, 10);
+        if (!main || !n) { say('Добавить дни: нет действующего заказа или не понял сколько', null, 'warn'); break; }
+        say(`Дней: ${main.days} → <b>${main.days + n}</b>`, () => {
+          audit(`Заказ ${cl.name}: дней ${main.days} → ${main.days + n} (ИИ из чата)`, { kind: n > 0 ? 'days+' : 'days-', cid: cl.id, days: n });
+          main.days += n; touch(main);
+        });
+        break;
+      }
+      case 'phone': if (v) say(`Телефон: ${esc(cl.phone || '—')} → <b>${esc(v)}</b>`, () => { cl.phone = v; touch(cl); }); break;
+      case 'address': if (v) say(`Адрес: заменить на «<b>${esc(v)}</b>»`, () => { cl.address = v; touch(cl); }); break;
+      case 'comment': if (v) say(`Комментарий о клиенте: добавить «<b>${esc(v)}</b>»`, () => { cl.comment = [cl.comment, v].filter(Boolean).join('\n'); touch(cl); }); break;
+      default: if (v) say(`Не умею сделать сам: «${esc(v)}» — нажмите «Нет» и поправьте в карточке`, null, 'warn');
+    }
+  }
+  if (!steps.length) say('ИИ не нашёл, что поменять', null, 'warn');
+  return steps;
+}
+
+// новый клиент из сообщения: поля заказа как в форме «Новый клиент»
+function chatNewOrder(a) {
+  const off = (a.days_off || []).map(x => String(x).toUpperCase().slice(0, 2));
+  return {
+    program: canonProgram(normProg(String(a.program || '').trim())), time: /веч/i.test(a.time) ? 'вечер' : 'утро', timeAt: '', courier: '',
+    persons: 0, company: '', manager: managerOf(a.manager) || managerOf(a.sender) || String(a.manager || '').trim() || operator(),
+    start: isoOk(a.start) ? a.start : '', days: Math.max(0, parseInt(a.days, 10) || 0),
+    weekdays: WD.map(w => (off.includes(w) ? 0 : 1)), dayMode: 'week', customDays: [],
+    allergen: String(a.allergen || '').trim(), note: '', holidays: 'yes', holidayCal: db.settings.holidayCalDefault || 'uz',
+  };
+}
+function planChatNew(a, existing) {
+  const x = chatNewOrder(a);
+  // клиент уже наш — продление идёт его ответственному, а не тому, кто написал в чат
+  if (existing && !managerOf(a.manager)) x.manager = existing.manager || lastOrderOf(existing)?.manager || x.manager;
+  const miss = [!String(a.name || '').trim() && 'ФИО', !existing && !String(a.phone || '').trim() && 'телефон', !x.program && 'программа',
+    !x.days && 'количество дней', !x.start && 'дата 1-й готовки'].filter(Boolean);
+  const rows = [
+    existing ? `Клиент уже есть в базе — <b>${esc(existing.name)}</b> (${esc(STATUS[CINFO.get(existing.id).status].toLowerCase())}): оформлю ему новый заказ` : `Новый клиент: <b>${esc(a.name)}</b>, тел. ${esc(a.phone || '—')}`,
+    existing ? '' : `Адрес: ${addrHtml(a.address || '—').replace(/\n/g, '<br>')}`,
+    `Программа <b>${esc(progLabel(x.program) || '—')}</b>, ${x.days || '—'} дн., 1-я готовка <b>${x.start ? fmt(dn(x.start)) : '—'}</b>, ${x.time}, дни: ${x.weekdays.every(Boolean) ? 'все, без выходных' : WD.filter((_, i) => x.weekdays[i]).join(' ')}`,
+    `Аллерген / исключения: ${x.allergen ? `<b>${esc(x.allergen)}</b>` : '—'}`,
+    `Ответственный: ${esc(x.manager || '—')} · курьер не указан — назначьте в карточке`,
+  ].filter(Boolean).map(t => ({ t, cls: '' }));
+  if (miss.length) rows.push({ t: `Не хватает: ${miss.join(', ')} — нажмите «Нет» и заполните форму`, cls: 'warn' });
+  // заказ с той же датой уже есть (например, пришёл из Excel) — второй не оформляем
+  const dup = existing && x.start ? (CINFO.get(existing.id)?.orders || []).find(o => o.start === x.start) : null;
+  if (dup) rows.push({ t: `У клиента уже есть заказ с ${fmt(dn(x.start))}: ${esc(progLabel(dup.program))}, ${dup.days} дн. — второй не оформляю`, cls: 'warn' });
+  return { rows, x, ok: !miss.length && !dup };
+}
+
+// передача дней из сообщения: у кого списать (a.cid), кому (a.toCid или новый клиент)
+function planChatTransfer(a) {
+  const from = a.cid ? CLIENTS.get(a.cid) : null, to = a.toCid ? CLIENTS.get(a.toCid) : null;
+  const src = from ? openOrdersOf(from).filter(o => daysLeftOf(o) > 0)[0] || null : null;
+  const n = parseInt(a.days, 10) || 0, start = isoOk(a.start) ? a.start : isoOf(TODAY + 1);
+  const time = /веч/i.test(a.time) ? 'вечер' : /утр/i.test(a.time) ? 'утро' : (src?.time || 'утро');
+  const prog = src && n ? progOfLast(src, Math.min(n, src.days)) : canonProgram(normProg(String(a.program || '').trim()));
+  const rows = [], add = (t, cls = '') => rows.push({ t, cls });
+  let bad = false;
+  if (src) {
+    if (n > daysLeftOf(src)) { add(`У ${esc(from.name)} осталось только ${daysLeftOf(src)} дн. — передать ${n} нельзя`, 'warn'); bad = true; }
+    else add(`У <b>${esc(from.name)}</b> (${esc(progLabel(src.program))}): дней ${src.days} → <b>${src.days - n}</b>, последние ${n} дн. снимаю с конца заказа`);
+  } else if (from) { add(`У ${esc(from.name)} нет действующего заказа с оставшимися днями — списывать не с чего`, 'warn'); bad = true; }
+  else if (String(a.from_name || '').trim()) { add(`«${esc(a.from_name)}» не найден в базе — выберите в списке «От кого»`, 'warn'); bad = true; }
+  else add('У кого забрать дни — в сообщении не сказано: у отдающего клиента спишите вручную', 'warn');
+  add(to ? `<b>${esc(to.name)}</b> (уже в базе): заказ ${esc(progLabel(prog) || '—')} на <b>${n || '—'}</b> дн. с ${fmt(dn(start))}, ${time}`
+    : `Новый клиент <b>${esc(a.to_name || '—')}</b>, тел. ${esc(a.to_phone || '—')}: заказ ${esc(progLabel(prog) || '—')} на <b>${n || '—'}</b> дн. с ${fmt(dn(start))}, ${time}`);
+  if (!to && a.to_address) add(`Адрес: ${addrHtml(a.to_address).replace(/\n/g, '<br>')}`);
+  const miss = [!n && 'сколько дней', !to && !String(a.to_name || '').trim() && 'ФИО получателя', !to && !String(a.to_phone || '').trim() && 'телефон получателя', !prog && 'программа'].filter(Boolean);
+  if (miss.length) { add(`Не хватает: ${miss.join(', ')} — нажмите «Нет» и заполните`, 'warn'); bad = true; }
+  const dup = to ? (CINFO.get(to.id)?.orders || []).find(o => o.start === start && o.days === n) : null;
+  if (dup) { add(`У ${esc(to.name)} уже есть заказ с ${fmt(dn(start))} на ${n} дн. — второй не оформляю`, 'warn'); bad = true; }
+  add('Передача — не продажа и не продление: в статистику продаж не идёт', 'muted');
+  return {
+    rows, ok: !bad, src, start, time,
+    run: () => transferDays(src, n, to ? { cid: to.id } : { name: a.to_name, phone: a.to_phone, address: a.to_address }, { start, time, program: src ? '' : prog, fromName: a.from_name }),
+  };
+}
+
+function openChatEdits() {
+  const st = { text: '', acts: null, notes: '' };
+  const view = () => {
+    if (!st.acts) {
+      return {
+        title: 'Правки из чата (ИИ)',
+        body: `<div class="muted small" style="margin-bottom:8px">Вставьте сообщения менеджеров как есть — с именами отправителей и временем, можно несколько сразу:
+          правки клиентам (аллергены, корректировки, «на готовку 17.11», заморозка, время, смена программы), новых клиентов (ФИО, телефон, адрес, программа, дни, дата 1-й готовки)
+          и передачу дней от одного клиента другому (это не продажа).
+          ИИ покажет, что сделает, и по каждому клиенту спросит «Применять?». Оплату не вносит.</div>
+          <textarea class="input" rows="14" data-m="text" placeholder="[13:46, 16.11.2026] Амина: Тожиходжаева Махизар&#10;Добавить аллерген❗️ исключить утку">${esc(st.text)}</textarea>`,
+        foot: `<button class="btn" data-act="closeModal">Отмена</button><button class="btn btn-green" data-m="parse">Разобрать (ИИ)</button>`,
+      };
+    }
+    const cards = st.acts.map((a, i) => {
+      const head = `<div class="row" style="gap:8px;align-items:baseline"><b>${esc(a.kind === 'transfer' ? `${a.from_name || '?'} → ${a.to_name || a.to_phone || '?'}` : a.name || '—')}</b>${a.sender ? `<span class="muted small">от ${esc(a.sender)}</span>` : ''}
+        <span class="tag ${a.kind === 'new' ? 'first' : a.kind === 'transfer' ? 'frozen' : 'future'}">${a.kind === 'new' ? 'новый клиент' : a.kind === 'transfer' ? 'передача дней' : 'правка'}</span></div>`;
+      let rows, can;
+      if (a.kind === 'transfer') {
+        const p = planChatTransfer(a);
+        rows = p.rows; can = p.ok;
+      } else if (a.kind === 'new') {
+        const p = planChatNew(a, a.cid ? CLIENTS.get(a.cid) : null);
+        rows = p.rows; can = p.ok;
+      } else {
+        const cl = a.cid ? CLIENTS.get(a.cid) : null;
+        rows = cl ? planChatEdit(cl, a.changes) : [{ t: 'Клиент не найден в базе — выберите его в списке', cls: 'warn' }];
+        can = rows.some(r => r.fn);
+      }
+      const pick = a.kind === 'transfer'
+        ? `<label class="small">От кого: <select class="input" data-m="cl" data-i="${i}" style="width:auto;padding:3px 8px">
+            <option value="">— не указан —</option>${a.cands.map(c => `<option value="${esc(c.id)}" ${c.id === a.cid ? 'selected' : ''}>${esc(c.name)} · ${esc(STATUS[CINFO.get(c.id).status].toLowerCase())}</option>`).join('')}</select></label>
+          <label class="small" style="margin-left:10px">Кому: <select class="input" data-m="to" data-i="${i}" style="width:auto;padding:3px 8px">
+            <option value="">Новый клиент</option>${a.toCands.map(c => `<option value="${esc(c.id)}" ${c.id === a.toCid ? 'selected' : ''}>${esc(c.name)} · ${esc(firstLine(c.phone || ''))}</option>`).join('')}</select></label>`
+        : a.kind === 'new'
+        ? (a.cands.length ? `<label class="small">Это существующий клиент? <select class="input" data-m="cl" data-i="${i}" style="width:auto;padding:3px 8px">
+            <option value="">Нет — новый клиент</option>${a.cands.map(c => `<option value="${esc(c.id)}" ${c.id === a.cid ? 'selected' : ''}>${esc(c.name)} · ${esc(c.phone || '')}</option>`).join('')}</select></label>` : '')
+        : `<label class="small">Клиент: <select class="input" data-m="cl" data-i="${i}" style="width:auto;padding:3px 8px">
+            <option value="">— не найден —</option>${a.cands.map(c => `<option value="${esc(c.id)}" ${c.id === a.cid ? 'selected' : ''}>${esc(c.name)} · ${esc(STATUS[CINFO.get(c.id).status].toLowerCase())}${c.phone ? ' · ' + esc(firstLine(c.phone)) : ''}</option>`).join('')}</select></label>`;
+      const foot = a.status === 'done' ? '<span class="tag first">✓ применено</span>'
+        : a.status === 'skip' ? '<span class="tag off">не применено — открыта карточка</span>'
+          : `<span class="muted">Применять правки?</span> <button class="btn btn-sm btn-green" data-m="yes" data-i="${i}" ${can ? '' : 'disabled'}>Да</button>
+             <button class="btn btn-sm" data-m="no" data-i="${i}">Нет</button>`;
+      return `<div class="card" style="margin-bottom:10px;${a.status ? 'opacity:.6' : ''}">${head}
+        ${a.status ? '' : `<div class="mt">${pick}</div>`}
+        <div class="muted small mt">${a.kind === 'new' ? 'Сделаю:' : 'Я сделаю так:'}</div>
+        <ul style="margin:4px 0 8px 18px;padding:0">${rows.map(r => `<li class="${r.cls === 'warn' ? 'warn-t' : r.cls === 'muted' ? 'muted' : ''}" style="${r.cls === 'warn' ? 'color:var(--red,#c0392b)' : ''}">${r.t}</li>`).join('')}</ul>
+        <div class="row" style="gap:8px;align-items:center">${foot}</div></div>`;
+    }).join('');
+    const left = st.acts.filter(a => !a.status).length;
+    return {
+      title: 'Правки из чата (ИИ)',
+      body: `${cards || '<div class="warn">ИИ не нашёл в сообщениях правок или новых клиентов.</div>'}${st.notes ? `<div class="muted small">ИИ: ${esc(st.notes)}</div>` : ''}`,
+      foot: `<button class="btn" data-m="back">← Изменить текст</button>${left > 1 ? `<button class="btn btn-green" data-m="yesAll">Да — применить всё (${left})</button>` : ''}
+        <button class="btn" data-act="closeModal">Готово</button>`,
+    };
+  };
+  const applyOne = a => {
+    if (a.kind === 'transfer') {
+      const p = planChatTransfer(a);
+      if (!p.ok) return false;
+      const r = p.run();
+      if (typeof r === 'string') { toast(r, 'bad', 6000); return false; }
+      a.log = `${r.log} (ИИ из чата${a.sender ? ', от ' + a.sender : ''})`;
+      return true;
+    }
+    if (a.kind === 'new') {
+      const ex = a.cid ? CLIENTS.get(a.cid) : null;
+      const p = planChatNew(a, ex);
+      if (!p.ok) return false;
+      const now = localIso();
+      let cid = ex?.id;
+      if (!ex) {
+        const nc = { id: uid('c_'), name: String(a.name).trim().replace(/\s+/g, ' '), phone: String(a.phone || '').trim(), address: String(a.address || '').trim(),
+          comment: '', tags: [], aiAllow: [], createdAt: now, updatedAt: now };
+        db.clients.push(nc);
+        cid = nc.id;
+      }
+      db.orders.push({ id: uid('o_'), clientId: cid, ...p.x, freezes: [], skips: [], stopped: null, createdAt: now, updatedAt: now });
+      if (ex) clearReturnTag(ex);
+      addToLists(p.x);
+      a.log = `${ex ? 'Новый заказ' : 'Новый клиент'}: ${ex ? ex.name : a.name}, ${progLabel(p.x.program)} с ${fmt(dn(p.x.start))} на ${p.x.days} дн. (ИИ из чата${a.sender ? ', от ' + a.sender : ''})`;
+      return true;
+    }
+    const cl = CLIENTS.get(a.cid);
+    if (!cl) return false;
+    const steps = planChatEdit(cl, a.changes).filter(s => s.fn);
+    if (!steps.length) return false;
+    for (const s of steps) s.fn();
+    a.log = `Правки из чата: ${cl.name} — ${steps.map(s => s.t.replace(/<[^>]+>/g, '')).join('; ')}${a.sender ? ' (от ' + a.sender + ')' : ''}`;
+    return true;
+  };
+  openModal({ wide: true, ...view(), onMount(root, m) {
+    const ta = $('[data-m="text"]', root);
+    if (ta) { ta.addEventListener('input', () => { st.text = ta.value; }); ta.focus(); }
+    const redraw = () => fillModal(m, view());
+    $('[data-m="back"]', root)?.addEventListener('click', () => { st.acts = null; redraw(); });
+    root.querySelectorAll('[data-m="cl"]').forEach(el => el.addEventListener('change', () => { st.acts[+el.dataset.i].cid = el.value; redraw(); }));
+    root.querySelectorAll('[data-m="to"]').forEach(el => el.addEventListener('change', () => { st.acts[+el.dataset.i].toCid = el.value; redraw(); }));
+    root.querySelectorAll('[data-m="yes"]').forEach(el => el.addEventListener('click', () => {
+      const a = st.acts[+el.dataset.i];
+      if (!applyOne(a)) { toast('Нечего применять — нажмите «Нет» и поправьте в карточке', 'bad'); return; }
+      a.status = 'done';
+      commit(a.log);
+      toast('Применено: ' + (a.name || ''), 'ok');
+      redraw();
+    }));
+    root.querySelectorAll('[data-m="no"]').forEach(el => el.addEventListener('click', () => {
+      const a = st.acts[+el.dataset.i];
+      a.status = 'skip';
+      redraw();
+      if (a.kind === 'transfer') {
+        // «Нет» у передачи — окно «Передача дней», заполненное тем, что понял ИИ
+        const p = planChatTransfer(a);
+        openTransferDays(p.src, { n: parseInt(a.days, 10) || 0, toId: a.toCid, name: a.toCid ? '' : a.to_name, phone: a.toCid ? '' : a.to_phone, address: a.to_address,
+          start: p.start, time: p.time, fromQ: a.from_name || '', fromName: a.from_name || '', noSrcOk: !a.from_name });
+      } else if (a.kind === 'new' && !a.cid) openChatNewForm(a);
+      else if (a.cid) openClientModal(a.cid);
+      else toast('Клиент не найден — найдите его в «Клиентах» поиском', 'bad', 6000);
+    }));
+    $('[data-m="yesAll"]', root)?.addEventListener('click', () => {
+      const done = [];
+      for (const a of st.acts.filter(x => !x.status)) if (applyOne(a)) { a.status = 'done'; done.push(a.log); }
+      if (done.length) { done.slice(0, -1).forEach(t => addLog(t)); commit(done[done.length - 1]); }
+      toast(`Применено: ${done.length}`, 'ok');
+      redraw();
+    });
+    $('[data-m="parse"]', root)?.addEventListener('click', async e => {
+      if (!st.text.trim()) { toast('Вставьте сообщения', 'bad'); return; }
+      if (!S.ai || !S.ai.hasKey) { toast('ИИ не подключён (ключ в «Админ» → «ИИ»)', 'bad', 6000); return; }
+      e.target.disabled = true;
+      e.target.textContent = 'ИИ разбирает…';
+      const prompt = `Ты помощник офиса службы доставки готовых рационов питания. Ниже — сообщения менеджеров из рабочего чата: правки по существующим клиентам и новые клиенты.
+Сегодня ${fmt(TODAY)} (${isoOf(TODAY)}). Дата без года — этого года. Все даты в ответе — ГГГГ-ММ-ДД.
+Правила:
+- Одно действие на клиента. Если одну и ту же правку повторили, переслали или подтвердили («+», цитата) — это одно действие, не дублируй. Правки одного клиента из разных сообщений объедини.
+- name — ФИО клиента как в сообщении. sender — кто написал: имя после «[время, дата]» у ЭТОГО сообщения; у текста без такой строки sender пустой (не бери имя из соседнего сообщения).
+- Правка существующего клиента — kind "edit", changes — список:
+  • "allergen_add" {text}: аллергены, исключения, «корректировки», пожелания к блюдам и калоражу («исключить утку», «завтрак и ланч белковые», «строго соблюдать калораж 3000 ккал», «мясо сочнее, добавлять соусы»). text — содержание как написано, без служебных слов («добавить аллерген», «внести корректировки»); несколько пожеланий — через запятую в одном text.
+  • "cook_from" {date}: «готовка 18.11», «на готовку 17.11», «возобновить с …», «готовить с …». date — как в сообщении (день фасовки), не пересчитывай.
+  • "freeze" {from, to}: заморозка, пауза. Даты — дни ФАСОВКИ, как в сообщении, не пересчитывай: «заморозка 17.11» → from 17.11; to — последний день без готовки или null.
+    «Заморозка 17.11, готовка 18.11» → два действия: freeze {from 17.11, to null} и cook_from {date 18.11}.
+  • "time" {value}: «утро» или «вечер».
+  • "program" {value, from}: ТОЛЬКО если прямо просят сменить программу или калораж («перевести на 1500», «сменить на Sirtfood»); value — калорийность числом или название; from — дата или null. Слова о программе рядом с именем («белковый рацион», «стандарт») — НЕ смена программы.
+  • "days_add" {value}: добавить (или убрать, с минусом) дни.
+  • "phone" {value}, "address" {value}, "comment" {text}: новые контакты и заметки о клиенте.
+  • "other" {text}: другая просьба — коротко, что просят.
+- Новый клиент (в сообщении программа или калораж, количество дней, дата, телефон, адрес) — kind "new":
+  phone — как написано; address — все строки про место (адрес, ориентир, ссылка на карту, КПП, подъезд, организация) как написано, через \\n;
+  program — калорийность числом («Стандарт 1800 ккал» → "1800") или название программы; days — число; start — дата 1-й готовки (дата в сообщении);
+  time — «утро» или «вечер»; days_off — выходные дни списком из ["ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС"] ([] если «выходные нет»);
+  allergen — аллергены, исключения, замены блюд как написано; manager — ответственный, если указан.
+  Оплату и суммы («к оплате») не бери.
+- Передача дней — клиент отдаёт свои оставшиеся дни другому человеку («передача дней», «передать дни», «переводим дни с … на …», «дни Иванова отдаём Петрову», «переданные дни», «от кого: … кому: …») — kind "transfer", НЕ "new" и НЕ "edit", даже если у получателя есть телефон, адрес и программа:
+  from_name — у кого забрать дни (пусто, если не сказано); to_name, to_phone, to_address — кому (как у нового клиента); days — сколько дней передают;
+  start — с какой даты готовить получателю; time — «утро» или «вечер»; program — программа, если указана.
+Сообщения:
+"""
+${st.text.trim()}
+"""
+Ответь только JSON: {"actions":[{"kind":"edit","name":"","sender":"","changes":[{"type":"allergen_add","text":""}]},{"kind":"new","name":"","sender":"","phone":"","address":"","program":"","days":0,"start":"","time":"утро","days_off":[],"allergen":"","manager":""},{"kind":"transfer","sender":"","from_name":"","to_name":"","to_phone":"","to_address":"","days":0,"start":"","time":"утро","program":""}],"notes":"что не понял, коротко, или пусто"}`;
+      try {
+        const res = await api('POST', '/api/ai/generate', JSON.stringify({ prompt }));
+        const j0 = JSON.parse(String(res.text).replace(/^```(?:json)?|```$/gm, '').trim());
+        const j = Array.isArray(j0) ? { actions: j0 } : j0;
+        // кто написал — по заголовку «[13:46, 16.11.2026] Амина:» перед именем клиента (ИИ любит приписывать соседнего);
+        // текст после пустой строки без своего заголовка — отправитель неизвестен
+        const heads = [...st.text.matchAll(/\[[^\]\n]{3,40}\]\s*([^:\n]{2,40}):/g)].map(x => ({ end: x.index + x[0].length, name: x[1].trim() }));
+        const senderOf = name => {
+          const pos = st.text.indexOf(String(name || '').trim().split(/\s+/)[0] || '\u0000');
+          const h = pos < 0 ? null : heads.filter(x => x.end <= pos).pop();
+          return h && !/\n\s*\n/.test(st.text.slice(h.end, pos)) ? h.name : '';
+        };
+        st.acts = (Array.isArray(j.actions) ? j.actions : []).filter(a => a && (a.name || a.phone || a.to_name || a.to_phone)).map(a => {
+          if (a.kind === 'transfer') {
+            a.sender = senderOf(a.to_name || a.from_name);
+            const cands = String(a.from_name || '').trim() ? findClientsByName(a.from_name, '').slice(0, 6) : [];
+            const toCands = findClientsByName(a.to_name, a.to_phone).slice(0, 6);
+            const same = c => (phoneKey(a.to_phone) && phoneKey(c.phone) === phoneKey(a.to_phone)) || soundKey(c.name) === soundKey(a.to_name);
+            return { ...a, kind: 'transfer', cands, cid: cands[0]?.id || '', toCands, toCid: toCands.find(same)?.id || '', status: '' };
+          }
+          a.sender = senderOf(a.name);
+          const kind = a.kind === 'new' ? 'new' : 'edit';
+          const cands = findClientsByName(a.name, kind === 'new' ? a.phone : '').slice(0, 6);
+          // новый: «уже есть» только при совпадении телефона или полного ФИО; правка: лучший кандидат
+          const same = c => (phoneKey(a.phone) && phoneKey(c.phone) === phoneKey(a.phone)) || soundKey(c.name) === soundKey(a.name);
+          const cid = kind === 'new' ? (cands.find(same)?.id || '') : (cands[0]?.id || '');
+          return { ...a, kind, cands, cid, status: '' };
+        });
+        st.notes = String(j.notes || '').trim();
+        redraw();
+      } catch (err) {
+        toast('ИИ: ' + err.message, 'bad', 8000);
+        e.target.disabled = false;
+        e.target.textContent = 'Разобрать (ИИ)';
+      }
+    });
+  } });
+}
+// «Нет» у нового клиента — обычная форма «Новый клиент», заполненная тем, что понял ИИ
+function openChatNewForm(a) {
+  const x = chatNewOrder(a);
+  openOrderForm({ newClient: true, prefill: x });
+  const root = MODALS[MODALS.length - 1]?.back;
+  if (!root) return;
+  const set = (n, v) => { const el = root.querySelector(`[name="${n}"]`); if (el && v) { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } };
+  set('name', String(a.name || '').trim());
+  set('phone', String(a.phone || '').trim());
+  set('address', String(a.address || '').trim());
+  set('start', x.start);
 }
 
 /* ---------------------------------------------------------------- форма заказа */
@@ -1187,6 +1574,15 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
         ${corpPrevious().length ? `<select class="input mt" name="corpPrev"><option value="">Как в прошлый раз…</option>${corpPrevious().map(o => `<option value="${esc(o.id)}">${fmtS(dn(o.start))} · ${esc(CLIENTS.get(o.clientId)?.name || '')} · ${esc(shorten(firstLine(o.allergen), 44))}</option>`).join('')}</select>` : ''}</div>
       <label class="field full"><span id="allergenLbl">Аллерген / исключения</span><textarea class="input" name="allergen" rows="2">${esc(v.allergen)}</textarea></label>
       <label class="field full"><span>Примечание к заказу</span><input class="input" name="note" value="${esc(v.note)}"></label>
+      ${order ? `<div class="field full"><span>В статистике продаж</span><div class="row" style="gap:8px;flex-wrap:wrap">
+        <select class="input" name="saleKind" style="width:auto"><option value="">авто — ${esc(SALE_KINDS[orderKindAuto(order)])}</option>
+          ${Object.entries(SALE_KINDS).map(([k, l]) => `<option value="${k}" ${order.saleKind === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <span class="muted small">дата продажи</span><input class="input" type="date" name="soldAt" style="width:auto" value="${esc(isDraftOrder(order) ? '' : saleIso(order))}"></div>
+        ${isDraftOrder(order) ? '<div class="muted small">Строка из Excel: когда её продали, неизвестно — в статистику не идёт, пока не укажете дату продажи.</div>' : ''}</div>` : ''}
+      <div class="field full"><label class="row" style="gap:6px"><input type="checkbox" name="isTransfer" ${order?.transfer ? 'checked' : ''} style="width:16px;height:16px">
+        <span>Передача дней от другого клиента — не продажа</span></label>
+        <input class="input mt" name="transferFrom" placeholder="от кого (ФИО)" value="${esc(order?.transfer?.fromName || '')}" ${order?.transfer ? '' : 'hidden'}>
+        <div class="muted small" ${order?.transfer ? '' : 'hidden'} id="trHint">У отдающего клиента дни здесь не списываются — для этого кнопка «⇆ Передать дни» в его карточке.</div></div>
       ${order ? '' : `<label class="field" id="copiesField"><span>Пакетов (идентичных заказов)</span><div class="row">
         <input class="input" type="number" min="1" max="10" name="copies" value="1" style="width:80px">
         <span class="muted small">2 — если клиент на своё имя заказывает два одинаковых пакета</span></div></label>`}
@@ -1388,8 +1784,12 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
       attachSuggest(root.querySelector('[name="courier"]'), () => db.lists.couriers);
       attachSuggest(root.querySelector('[name="manager"]'), () => db.lists.managers);
       setTimeout(() => root.querySelector(newClient ? '[name="name"]' : '[name="program"]')?.focus(), 30);
+      const trBox = root.querySelector('[name="isTransfer"]');
+      trBox.addEventListener('change', () => { root.querySelector('[name="transferFrom"]').hidden = !trBox.checked; $('#trHint', root).hidden = !trBox.checked; });
+      // отметка «передача дней»: такой заказ не считается продажей
+      const transferOf = () => (trBox.checked ? { ...(order?.transfer || { fromOrder: '', fromClient: '', days: 0, at: localIso() }), fromName: root.querySelector('[name="transferFrom"]').value.trim() } : null);
       const saveOrder = more => {
-        const x = read();
+        const x = read(), tr = transferOf();
         const errs = [];
         let c = null;
         if (newClient) {
@@ -1434,11 +1834,21 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
               sev: (rest.days > was.days && activeNow) || dn(rest.start) < Math.min(dn(was.start), TODAY) ? 'warn' : 'info',
             });
           }
+          if (!!tr !== !!order.transfer) chg.push(tr ? 'отмечен как передача дней (не продажа)' : 'снята отметка «передача дней»');
+          // продажа / продление и дата продажи — вручную (дата, совпадающая с днём оформления, не хранится)
+          const sk = root.querySelector('[name="saleKind"]').value, sd = root.querySelector('[name="soldAt"]').value;
+          const shown = isDraftOrder(order) ? '' : saleIso(order);
+          const sdKeep = sd === shown ? order.soldAt || '' : sd && (/^o_L/.test(order.id) || sd !== String(order.createdAt || '').slice(0, 10)) ? sd : '';
+          if (sk !== (order.saleKind || '')) chg.push(`в статистике: ${sk ? SALE_KINDS[sk] : 'авто'}`);
+          if (sdKeep !== (order.soldAt || '')) chg.push(`дата продажи ${sdKeep ? fmt(dn(sdKeep)) : '—'}`);
+          if (sk) order.saleKind = sk; else delete order.saleKind;
+          if (sdKeep) order.soldAt = sdKeep; else delete order.soldAt;
           order.__chg = chg.join('; ');
           const pc = order.progCh;
           Object.assign(order, rest);
           if (was.program !== rest.program) order.progCh = { at: localIso(), from: pc && pc.at.slice(0, 10) === localIso().slice(0, 10) ? pc.from : was.program };
           if (stg) order.stages = stg; else delete order.stages;
+          if (tr) order.transfer = tr; else delete order.transfer;
           touch(order);
           logText = `Изменён заказ: ${CLIENTS.get(order.clientId)?.name || ''}, ${progLabel(x.program)} с ${fmt(dn(x.start))}${order.__chg ? ' — ' + order.__chg : ''}`;
           delete order.__chg;
@@ -1446,7 +1856,7 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
           const now = localIso();
           const copies = Math.max(1, Math.min(10, parseInt(root.querySelector('[name="copies"]')?.value, 10) || 1));
           for (let n = 0; n < copies; n++) {
-            db.orders.push({ id: uid('o_'), clientId: cid, ...rest, ...(stg ? { stages: stg.map(z => ({ ...z })) } : {}), freezes: [], skips: [], stopped: null, createdAt: now, updatedAt: now });
+            db.orders.push({ id: uid('o_'), clientId: cid, ...rest, ...(stg ? { stages: stg.map(z => ({ ...z })) } : {}), ...(tr ? { transfer: { ...tr, days: rest.days } } : {}), freezes: [], skips: [], stopped: null, createdAt: now, updatedAt: now });
           }
           clearReturnTag(CLIENTS.get(cid)); // снова купил — «Возврат» больше не актуален
           if (copies > 1) logText = (logText || '') + ` · пакетов: ${copies}`;
@@ -1957,6 +2367,7 @@ function openReturn(o) {
         const d = root.querySelector('[name="day"]').value;
         if (!d) return;
         o.stopped = d;
+        o.stoppedAt = localIso(); // возврат оформлен в программе (а не пришёл из Excel)
         touch(o);
         ensureReturnTag();
         if (cl && !(cl.tags || []).includes('t_return')) { cl.tags = [...(cl.tags || []), 't_return']; touch(cl); }
@@ -2006,7 +2417,7 @@ function openFindReturners() {
         if (!picked.length) { toast('Никто не отмечен', 'bad'); return; }
         ensureReturnTag();
         for (const r of picked) {
-          r.o.stopped = isoOf(TODAY); touch(r.o);
+          r.o.stopped = isoOf(TODAY); r.o.stoppedAt = localIso(); touch(r.o);
           r.c.tags = [...(r.c.tags || []), 't_return']; touch(r.c);
           audit(`Возврат ${r.c.name}: заморозка с ${fmt(r.since)}${r.indef ? ' на неопр. срок' : ''}, не использовано ${r.left} дн.`, { kind: 'return', cid: r.c.id, sev: 'warn', days: -r.left });
         }
@@ -2143,6 +2554,42 @@ function migrate() {
     const at = db.meta.lastReceived?.at || [...cnt.entries()].sort((x, y) => y[1] - x[1])[0]?.[0];
     if (at) { db.meta.legacyAt = at; changed = true; }
   }
+  if (!db.meta.mig.transferSukhrob) {
+    // 17.11 Тожиддинов Асадбек передал свои 11 дней Abdullaev Sukhrob: заказ Асадбека удалили, Сухробу оформили как нового — это не продажа
+    const o = db.orders.find(x => x.id === 'o_mwkh9oatgd95s');
+    if (o && !o.transfer) {
+      o.transfer = { fromOrder: '', fromClient: 'c_ddb43d2b06e3', fromName: db.clients.find(c => c.id === 'c_ddb43d2b06e3')?.name || 'Тожиддинов Асадбек', days: o.days, at: localIso() };
+      touch(o);
+      addLog(`Передача дней: заказ ${db.clients.find(c => c.id === o.clientId)?.name || ''} (${o.days} дн. с ${fmt(dn(o.start))}) — дни от ${o.transfer.fromName}, не продажа`);
+    }
+    db.meta.mig.transferSukhrob = localIso();
+    // Каримуллин Руслан — клиент Амины: продление 17.11 оформили через чат, ответственным по ошибке поставили Адему
+    const k = db.orders.find(x => x.id === 'o_mwkictvxj7nri');
+    if (k && k.manager === 'Адема') { k.manager = 'Амина'; touch(k); addLog('Каримуллин Руслан: ответственный продления с 17.11 — Амина (клиент Амины), было Адема'); }
+    changed = true;
+  }
+  if (!db.meta.mig.sales1117) {
+    // последние строки Excel (№ 7446–7452) внесли 16–17.11 — это продажи и продления этих дней (сверено с офисом)
+    const list = [[7446, 'renew', '2026-11-17'], [7447, 'renew', '2026-11-16'], [7448, 'renew', '2026-11-17'], [7449, 'new', '2026-11-17', 'Асиф'],
+      [7450, 'new', '2026-11-16', 'Алина'], [7451, 'new', '2026-11-17', 'Алина'], [7452, 'new', '2026-11-17', 'Алина']];
+    const done = [];
+    for (const [no, kind, at, man] of list) {
+      const o = db.orders.find(x => x.id === 'o_L' + no);
+      if (!o || o.soldAt) continue;
+      o.soldAt = at; o.saleKind = kind;
+      if (man) o.manager = man;
+      touch(o);
+      done.push(`${db.clients.find(c => c.id === o.clientId)?.name || no} — ${SALE_KINDS[kind]} ${o.manager} ${fmt(dn(at))}`);
+    }
+    if (done.length) addLog(`Статистика: заказы из Excel, оформленные 16–17.11: ${done.join('; ')}`);
+    db.meta.mig.sales1117 = localIso();
+    changed = true;
+  }
+  if (db.meta.legacyAt && !db.meta.launchAt) {
+    // первая загрузка Excel здесь была 16.11.2026 (резервная копия before_import); 17.11 базу загрузили повторно
+    db.meta.launchAt = [String(db.meta.legacyAt).slice(0, 10), '2026-11-16'].sort()[0];
+    changed = true;
+  }
   if (!db.meta.mig.return2027) {
     // в старой базе «возвраты» были заморозками до 2028–2031 года → оформляем как «Возврат»
     ensureReturnTag();
@@ -2160,6 +2607,28 @@ function migrate() {
     }
     db.meta.mig.return2027 = localIso();
     if (n) addLog(`Возврат: ${n} заказов, замороженных дольше апреля 2027, остановлены и помечены «Возврат»`, 'stop');
+    changed = true;
+  }
+  if (!db.meta.mig.dupLegacy1117) {
+    // заказы, заведённые в программе 02–03.11, вернулись синхронизацией рядом с теми же заказами из Excel (загрузка 17.11) —
+    // лишние пакеты в фасовке. Копию убираем, меню дня и отметки проверки аллергий переносим на заказ из Excel
+    const same = o => [o.clientId, o.start, +o.days, normProg(o.program).toLowerCase()].join('|');
+    const legacy = new Map(db.orders.filter(o => /^o_L/.test(o.id)).map(o => [same(o), o]));
+    const names = [];
+    for (const o of db.orders.slice()) {
+      const l = !/^o_L/.test(o.id) && legacy.get(same(o));
+      if (!l) continue;
+      for (const day of Object.values(db.menu.days || {})) {
+        for (const b of Object.values(day || {})) {
+          if (b && b.c && b.c[o.id]) { if (!b.c[l.id]) b.c[l.id] = b.c[o.id]; delete b.c[o.id]; }
+        }
+        for (const it of (day && day._checks && day._checks.items) || []) if (it.oid === o.id) it.oid = l.id;
+      }
+      deleteRecord('orders', o.id);
+      names.push(db.clients.find(c => c.id === o.clientId)?.name || o.id);
+    }
+    db.meta.mig.dupLegacy1117 = localIso();
+    if (names.length) addLog(`Удалены копии заказов, повторявшие заказы из Excel (${names.length}): ${names.join(', ')}`, 'edit');
     changed = true;
   }
   return changed;
@@ -3076,18 +3545,27 @@ function periodRange(kind, off) {
   const a = U(y + off, 0, 1), b = U(y + off + 1, 0, 1) - 1;
   return [a, b, `${y + off} год`];
 }
-// продажа (новый клиент), продление или «вытащили из архива»
-// Заказы из старой Excel-базы: дата продажи там неизвестна, «создан» = дата начала периода. До переноса это единственная оценка,
-// а всё, что начинается после переноса, — не продажа в этот день, поэтому в статистику продаж и продлений не идёт.
-const legacyAt = () => String(db.meta.legacyAt || '').slice(0, 10);
-const isDraftOrder = o => /^o_L/.test(o.id) && !!legacyAt() && String(o.createdAt || '').slice(0, 10) >= legacyAt();
+// продажа (новый клиент), продление или «вытащили из архива» — в день, когда заказ оформили, а не когда он начался.
+// Заказы из старой Excel-базы: дата продажи там неизвестна, «создан» = дата начала периода. До запуска программы это единственная оценка,
+// а всё, что начинается с запуска, куплено раньше (клиент просто начал питаться) — в статистику продаж и продлений не идёт.
+const legacyAt = () => String(db.meta.launchAt || db.meta.legacyAt || '').slice(0, 10);
+// у строки Excel можно указать дату продажи (o.soldAt) — тогда она считается, как оформленная в программе
+const isDraftOrder = o => /^o_L/.test(o.id) && !o.soldAt && !!legacyAt() && String(o.createdAt || '').slice(0, 10) >= legacyAt();
+const saleIso = o => String(o.soldAt || o.createdAt || '').slice(0, 10); // день продажи / продления
+const SALE_KINDS = { new: 'продажа', renew: 'продление', archive: 'из архива' };
+// передача дней от другого клиента — не продажа и не продление
+const isSale = o => !o.transfer && !!saleIso(o) && saleIso(o) <= isoOf(TODAY) && !!CLIENTS.get(o.clientId) && !isDraftOrder(o);
 function clearReturnTag(cl) {
   if (cl && (cl.tags || []).includes('t_return')) { cl.tags = cl.tags.filter(t => t !== 't_return'); touch(cl); }
 }
-function orderKind(o) {
+// продажа / продление можно указать в заказе вручную (o.saleKind), иначе — по истории клиента
+const orderKind = o => (SALE_KINDS[o.saleKind] ? o.saleKind : orderKindAuto(o));
+function orderKindAuto(o) {
   const os = BY_CLIENT.get(o.clientId) || [];
-  const prev = os.filter(x => x !== o && (x.start < o.start || (x.start === o.start && x.createdAt < o.createdAt)) && calc(x).list.length);
+  // переданные дни — не покупка: после них первая своя покупка — продажа
+  const prev = os.filter(x => x !== o && !x.transfer && (x.start < o.start || (x.start === o.start && x.createdAt < o.createdAt)) && calc(x).list.length);
   if (!prev.length) return 'new';
+  if (prev.length === 1 && prev[0].days <= 1) return 'new'; // до этого был только пробник (1 день) — покупка после него тоже продажа
   const lastEnd = Math.max(...prev.map(x => calc(x).end));
   return addMonthsDn(lastEnd, archiveMonths()) < dn(o.start) ? 'archive' : 'renew';
 }
@@ -3097,11 +3575,11 @@ function viewStatsPeriod() {
   const inP = iso => { const d = dn(String(iso || '').slice(0, 10)); return d >= a && d <= b; };
   const seen = new Set();
   // покупка — заказ, оформленный не позже сегодняшнего дня; будущие строки Excel (дата = начало периода) — не покупки
-  const created = db.orders.filter(o => inP(o.createdAt) && String(o.createdAt).slice(0, 10) <= isoOf(TODAY) && CLIENTS.get(o.clientId) && !isDraftOrder(o)).filter(o => {
+  const created = db.orders.filter(o => inP(o.createdAt) && isSale(o)).filter(o => {
     const k = o.clientId + '|' + o.start; if (seen.has(k)) return false; seen.add(k); return true; // 2 пакета одному клиенту — одна продажа
   });
   const kinds = created.map(o => [o, orderKind(o)]);
-  const returns = db.orders.filter(o => o.stopped && inP(o.stopped) && !(/^o_L/.test(o.id) && legacyAt() && o.stopped >= legacyAt())); // перенос ставил дату файла — это не возврат в тот день
+  const returns = db.orders.filter(o => o.stopped && inP(o.stopped) && !(/^o_L/.test(o.id) && !o.stoppedAt && legacyAt() && o.stopped >= legacyAt())); // перенос ставил дату файла — это не возврат в тот день
   let deliveries = 0;
   const bb = Math.min(b, TODAY + 1);
   for (const o of db.orders) { const l = calc(o).list; if (l.length && l[l.length - 1] >= a && l[0] <= bb) deliveries += countLE(l, bb) - countLE(l, a - 1); }
@@ -3121,7 +3599,7 @@ function viewStatsPeriod() {
       <button class="btn btn-icon" data-act="stOff" data-d="1" ${st.off >= 0 ? 'disabled' : ''}>›</button>
       ${st.off ? '<button class="btn btn-sm" data-act="stOff" data-d="0">текущий</button>' : ''}</div>
     <span class="muted small">${st.kind === 'week' ? 'неделя с понедельника по воскресенье — в понедельник в 0:00 начинается новая' : ''}</span></div>
-    ${legacyAt() ? `<div class="muted small mt">Продажа — новый клиент купил, продление — существующий купил ещё раз. Считаются заказы, оформленные в программе. Данные старой базы — только до переноса (${fmt(dn(legacyAt()))}), по дате начала периода.</div>` : ''}</div>
+    ${legacyAt() ? `<div class="muted small mt">Продажа — новый клиент купил, продление — существующий купил ещё раз; считается в день, когда заказ оформили в программе, а не когда клиент начал питаться. Данные старой базы — только до запуска программы (${fmt(dn(legacyAt()))}), по дате начала периода.</div>` : ''}</div>
   <div class="stats">
     ${tile(count('new'), 'продаж (новые клиенты)', 's-active')}
     ${tile(count('renew'), 'продлений', 's-idle')}
@@ -3185,16 +3663,18 @@ function viewStatsAll() {
     const d = from + i;
     return { label: fmtS(d), value: v, plan: d > TODAY, tip: `${fmt(d)}, ${WD_FULL[wdOf(d)]}: ${v} ${d > TODAY ? '(план)' : 'доставок'}` };
   });
-  // помесячно: новые клиенты и продления (последние 12 мес.)
+  // помесячно: новые клиенты и продления (последние 12 мес.) — по дню оформления, как в статистике за период
   const m0 = addMonthsDn(monthStartDn(TODAY), -11);
   const months = Array.from({ length: 12 }, (_, i) => addMonthsDn(m0, i));
   const newC = new Map(months.map(m => [m, 0])), ren = new Map(months.map(m => [m, 0]));
-  for (const [, os] of BY_CLIENT) {
-    os.forEach((o, i) => {
-      const m = monthStartDn(dn(o.start));
-      if (!newC.has(m)) return;
-      if (i === 0) newC.set(m, newC.get(m) + 1); else ren.set(m, ren.get(m) + 1);
-    });
+  const seen = new Set();
+  for (const o of db.orders) {
+    if (!isSale(o)) continue;
+    const m = monthStartDn(dn(saleIso(o)));
+    if (!newC.has(m) || seen.has(o.clientId + '|' + o.start)) continue;
+    seen.add(o.clientId + '|' + o.start);
+    const map = orderKind(o) === 'new' ? newC : ren;
+    map.set(m, map.get(m) + 1);
   }
   const mData = map => months.map(m => ({ label: monthLabel(m), value: map.get(m), tip: `${monthLabel(m)}: ${map.get(m)}` }));
   // процент продлений: заказы, закончившиеся за последние 30 дней
@@ -3457,6 +3937,8 @@ function viewMenu() {
         <button class="btn btn-sm ${recOpen(r.o.id) ? 'btn-green' : ''}" data-act="mcRec" data-o="${esc(r.o.id)}" title="Граммы под каждым блюдом этого клиента — ИИ посчитает КБЖУ по ним и подгонит порции под калораж">⚖ Граммовка</button>
         <button class="btn btn-sm" data-act="mcCalc" data-o="${esc(r.o.id)}" ${S.aiBusy ? 'disabled' : ''} title="ИИ посчитает КБЖУ только этому клиенту и заменит его значения">КБЖУ (ИИ)</button>
         <button class="btn btn-sm" data-act="mcGrams" data-o="${esc(r.o.id)}" ${S.aiBusy ? 'disabled' : ''} title="ИИ сам распишет, сколько чего положить в каждое блюдо — под калораж и пожелания клиента, не больше лимита блюда">Граммаж по меню (ИИ)</button>
+        <button class="btn btn-sm" data-act="mcKbjuText" data-o="${esc(r.o.id)}" title="Вставить КБЖУ этого клиента текстом — ИИ разложит цифры по приёмам пищи">КБЖУ текстом</button>
+        <button class="btn btn-sm" data-act="mcKbjuClear" data-o="${esc(r.o.id)}" title="Стереть КБЖУ этого клиента на этот день">✕ КБЖУ</button>
         ${r.o.allergen ? `<div class="allergen">${esc(r.o.allergen)}</div>` : ''}</div>
       <div class="pc-pos">
         ${f.meals.map(m => { const on = !off.includes(m.name.toLowerCase()); return `<button class="pc-chip ${on ? 'on' : 'off'}" data-act="mcMeal" data-c="${esc(r.cl.id)}" data-n="${esc(m.name)}" title="${on ? 'Убрать у этого клиента' : 'Вернуть этому клиенту'}">${esc(m.name)}</button>`; }).join('')}
@@ -3496,6 +3978,8 @@ function viewMenu() {
           <select class="input" data-bind="gMode" data-id="${esc(f.id)}" style="width:auto;padding:4px 8px" title="Как ИИ берёт вес порций">
             ${G_MODES.map(([k, l]) => `<option value="${k}" ${gModeOf(f) === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
           <button class="btn btn-sm" data-act="recToggle">${showRec() ? '▾ Свернуть граммовку' : `▸ Граммовка${Object.values(md.r || {}).filter(x => String(x).trim()).length ? ` (${Object.values(md.r).filter(x => String(x).trim()).length})` : ''}`}</button>
+          ${f.perClient ? '<button class="btn btn-sm" data-act="menuKbjuText" title="Вставьте текст с КБЖУ — ИИ сам найдёт клиента по имени и разложит цифры по приёмам пищи">Вставить КБЖУ текстом (ИИ)</button>' : ''}
+          <button class="btn btn-sm" data-act="menuKbjuClear" title="Стереть все КБЖУ этого меню на этот день${f.perClient ? ' — общие и у всех клиентов' : ''}">✕ Стереть все КБЖУ</button>
           ${gModeOf(f) === 'tpl' ? `<span class="muted small">${gtKeysOf(f).some(gtText) ? `Шаблон граммовок: ${f.kbju ? gtKeysOf(f).filter(gtText).length + ' калорийн.' : 'задан'}` : 'Шаблон не задан — кнопка «Шаблон граммовок» вверху'}</span>` : ''}
         </div>
         ${gModeOf(f) === 'tpl' && !f.perClient ? `<details class="mt" ${Object.keys(md.gx || {}).length ? 'open' : ''}><summary class="small"><b>Исключения на этот день</b>
@@ -4618,6 +5102,183 @@ ${meals.map((m, i) => `${i + 1}. [${m.name}] ${String(own[m.id]).replace(/\n+/g,
   render();
 }
 
+// КБЖУ клиента, вписанный руками или вставленный текстом: подпись блюд, чтобы автоподсчёт ИИ его не перезаписал (как в mck)
+function markClientKbjuManual(D, f, oid, variant) {
+  const md = menuVariant(D, f.id, variant, false), cd = menuClient(D, f.id, oid, true);
+  const own = {}, list = clientMeals(f, CLIENTS.get(ORDERS.get(oid)?.clientId));
+  for (const m of list) own[m.id] = String(cd.d[m.id] || '').trim() || md.d[m.id] || mainDish(D, m.name, f);
+  cd.kManualSig = JSON.stringify(list.map(m => [m.id, String(own[m.id] || '').trim()]).filter(x => x[1]));
+}
+// стереть КБЖУ: одного клиента (oid) или всё меню формата на день — общее и у всех клиентов.
+// Подписи ИИ (kSig, kbjuSig) остаются: пока блюда те же, автоподсчёт стёртое заново не заполнит
+function clearKbju(D, f, oid) {
+  const b = menuBlock(D, f.id, false);
+  if (!b) return 0;
+  let n = 0;
+  const wipe = x => {
+    if (!x) return;
+    if (Object.values(x.k || {}).some(k => (k || []).some(v => +v)) || x.kp) n++;
+    x.k = {};
+    for (const key of ['g', 'kp', 'kbjuAt']) delete x[key];
+  };
+  if (oid) wipe(b.c[oid]);
+  else { Object.values(b.v).forEach(wipe); Object.values(b.c).forEach(wipe); }
+  b.at = localIso();
+  return n;
+}
+// «КБЖУ текстом»: вставили текст от нутрициолога / из чата — ИИ раскладывает цифры по клиентам и приёмам пищи
+function openKbjuText(f, oid = '') {
+  const D = S.md;
+  const rows = menuRowsFor(D, f.id).filter(r => !oid || r.o.id === oid);
+  if (!rows.length) { toast('На эту дату клиентов с этим меню нет', 'bad'); return; }
+  const st = { text: '', groups: null, skipped: [], notes: '' };
+  const r1 = oid ? rows[0] : null;
+  // число из ответа ИИ: 165, "165", "≈ 165 К", "18,5"
+  const num = v => { const m = String(v ?? '').replace(',', '.').match(/-?\d+(\.\d+)?/); return m ? +m[0] : ''; };
+  const r10 = v => (v === '' ? '' : Math.round(v * 10) / 10);
+  // блюда клиента по приёмам — как на его карточке: своё, иначе общее меню формата, иначе основное
+  const dishesOf = r => {
+    const md = menuVariant(D, f.id, r.variant, false), cd = menuClient(D, f.id, r.o.id, false);
+    return clientMeals(f, r.cl).map(m => ({ m, text: String(cd.d[m.id] || '').trim() || md.d[m.id] || mainDish(D, m.name, f) || '' }));
+  };
+  const HOW = { meal: 'приём указан', dish: 'по блюду', order: 'по порядку — проверьте' };
+  const sumOf = list => [0, 1, 2, 3].map(i => r10(list.reduce((a, x) => (x.k[i] === '' ? a : (a === '' ? 0 : a) + x.k[i]), '')));
+  const preview = () => {
+    const gs = st.groups;
+    const byClient = new Map();
+    gs.forEach((g, i) => { if (!byClient.has(g.r.o.id)) byClient.set(g.r.o.id, []); byClient.get(g.r.o.id).push(i); });
+    return `${gs.length ? `<table class="t compact"><thead><tr><th></th>${rows.length > 1 ? '<th>Клиент</th>' : ''}<th>Приём</th><th>Что в тексте</th>
+      <th class="right">К</th><th class="right">Б</th><th class="right">Ж</th><th class="right">У</th></tr></thead>
+      <tbody>${[...byClient.values()].map(ids => ids.map(i => { const g = gs[i]; return `<tr class="${g.how === 'order' ? 'conflict' : ''}">
+        <td><input type="checkbox" data-m="pick" data-i="${i}" ${g.on ? 'checked' : ''} style="width:16px;height:16px"></td>
+        ${rows.length > 1 ? `<td class="name">${esc(g.r.cl.name)}</td>` : ''}<td class="nowrap"><b>${esc(g.meal.name)}</b><div class="muted small">${esc(HOW[g.how] || '')}</div></td>
+        <td class="small">${esc(g.dishes.join(' + '))}<div class="muted small">в меню: ${esc(g.menu || '—')}</div></td>
+        ${g.k.map(v => `<td class="right">${v === '' ? '—' : v}</td>`).join('')}</tr>`; }).join('')
+        + `<tr><td></td>${rows.length > 1 ? '<td></td>' : ''}<td colspan="2" class="right muted">Итого отмеченное${rows.length > 1 ? ' — ' + esc(gs[ids[0]].r.cl.name) : ''}</td>
+          ${sumOf(ids.filter(i => gs[i].on).map(i => gs[i])).map(v => `<td class="right"><b>${v === '' ? '—' : v}</b></td>`).join('')}</tr>`).join('')}</tbody></table>`
+      : `<div class="warn">ИИ не нашёл в тексте КБЖУ по приёмам пищи для этих клиентов — нажмите «Изменить текст» и «Разобрать» ещё раз.</div>
+        ${st.raw ? `<details class="mt"><summary class="small muted">Что ответил ИИ</summary><pre class="small" style="white-space:pre-wrap;max-height:200px;overflow:auto">${esc(st.raw.slice(0, 3000))}</pre></details>` : ''}`}
+      ${st.skipped.length ? `<div class="warn mt">Не вставляется: ${st.skipped.map(x => esc(x)).join('; ')}</div>` : ''}
+      ${st.notes ? `<div class="muted small mt">ИИ: ${esc(st.notes)}</div>` : ''}
+      <div class="muted small mt">Отмеченные приёмы получат эти цифры (несколько блюд одного приёма сложены); остальные приёмы не меняются.
+        Автоподсчёт ИИ вставленное не перезапишет, пока блюда те же.</div>`;
+  };
+  const title = r1 ? `КБЖУ текстом — ${r1.cl.name}` : 'КБЖУ текстом';
+  const view = () => (st.groups ? {
+    title,
+    body: preview(),
+    foot: `<button class="btn" data-m="back">← Изменить текст</button>
+      <button class="btn btn-green" data-m="apply" ${st.groups.some(g => g.on) ? '' : 'disabled'}>Вставить</button>`,
+  } : {
+    title,
+    body: `<div class="muted small" style="margin-bottom:8px">${r1 ? `Клиент: <b>${esc(r1.cl.name)}</b>. ` : `Меню «${esc(f.name)}» на ${fmt(D)}: ${rows.length} клиентов — ИИ сам найдёт клиента по имени в тексте. `}
+      Вставьте текст как есть: по приёмам («Завтрак 350 ккал, Б 20, Ж 12, У 40») или по блюдам («Куриный сай ≈ 435 К / 45 Б / 5 Ж / 48 У») —
+      ИИ сопоставит блюда с меню клиента, несколько блюд одного приёма сложит, «Итого» пропустит.</div>
+      <textarea class="input" rows="12" data-m="text" placeholder="Текст с КБЖУ">${esc(st.text)}</textarea>`,
+    foot: `<button class="btn" data-act="closeModal">Отмена</button>
+      <button class="btn btn-green" data-m="parse">Разобрать (ИИ)</button>`,
+  });
+  openModal({ wide: true, ...view(), onMount(root, m) {
+    const ta = $('[data-m="text"]', root);
+    if (ta) { ta.addEventListener('input', () => { st.text = ta.value; }); ta.focus(); }
+    $('[data-m="back"]', root)?.addEventListener('click', () => { st.groups = null; fillModal(m, view()); });
+    root.querySelectorAll('[data-m="pick"]').forEach(el => el.addEventListener('change', () => { st.groups[+el.dataset.i].on = el.checked; fillModal(m, view()); }));
+    $('[data-m="parse"]', root)?.addEventListener('click', async e => {
+      if (!st.text.trim()) { toast('Вставьте текст с КБЖУ', 'bad'); return; }
+      if (!S.ai || !S.ai.hasKey) { toast('ИИ не подключён (ключ в «Админ» → «ИИ»)', 'bad', 6000); return; }
+      e.target.disabled = true;
+      e.target.textContent = 'ИИ разбирает…';
+      const menus = rows.map(dishesOf);
+      const prompt = `Ты помогаешь кухне службы доставки рационов. В тексте ниже — КБЖУ (калории, белки, жиры, углеводы) блюд или приёмов пищи. Отнеси каждую запись к клиенту и его приёму пищи.
+Клиенты и их меню на этот день (номер клиента: имя; ниже — номер приёма, приём: блюда):
+${rows.map((r, i) => `${i + 1}: ${r.cl.name}\n${menus[i].map((x, j) => `   ${j + 1} ${x.m.name}: ${x.text.replace(/\s*\n+\s*/g, '; ') || '—'}`).join('\n')}`).join('\n')}
+Правила:
+- Клиента определяй по имени или фамилии в тексте (может быть латиницей, сокращённо, с опечаткой).${rows.length === 1 ? ' В списке один клиент — всё относится к нему, даже если имени в тексте нет.' : ' Если клиента нет в списке — не придумывай, напиши об этом в notes.'}
+- Одна запись items — одна запись с цифрами в тексте (блюдо или приём), в том же порядке, что в тексте. Повторы в тексте не объединяй — каждый повтор отдельной записью.
+- Строки «Итого», «Всего», «за день» — не записи, пропусти их (кроме случая, когда в тексте есть только КБЖУ на весь день: тогда одна запись с meal 0).
+- Приём пищи (meal — номер из меню этого клиента):
+  • в записи прямо назван приём («Завтрак», «Обед», «Комплимент — фрукты») — этот приём, how "meal";
+  • иначе ищи блюдо в меню клиента по смыслу (одно блюдо приёма может быть записано отдельно: «Трайфл» и «Фрукты» — части комплимента «Трайфл с арахисом; Фруктовая нарезка») — how "dish";
+  • блюда нет в меню — определи приём по порядку записей: текст обычно идёт по приёмам; запись стоит между записями уже найденных приёмов — бери подходящий приём из меню между ними (свободный, у которого своей записи нет; напиток рядом с десертом — тот же приём) — how "order";
+  • совсем не понять — meal 0.
+- Числа бери ровно как в тексте (знак ≈ не важен), ничего не пересчитывай и не придумывай; чего нет — null.
+Текст:
+"""
+${st.text.trim()}
+"""
+Ответь только JSON: {"items":[{"client":1,"meal":1,"how":"dish","dish":"название из текста","kcal":0,"protein":0,"fat":0,"carbs":0}],"notes":"что не удалось отнести, коротко, или пусто"}`;
+      try {
+        const res = await api('POST', '/api/ai/generate', JSON.stringify({ prompt }));
+        st.raw = String(res.text);
+        const j0 = JSON.parse(st.raw.replace(/^```(?:json)?|```$/gm, '').trim());
+        const j = Array.isArray(j0) ? { items: j0 } : j0;
+        const low = t => String(t).toLowerCase().replace(/ё/g, 'е');
+        // ИИ иногда пишет номер словами или именем («Тошпулатов Ислом», «Завтрак») — находим и так
+        const pickIdx = (v, list, nameOf) => {
+          if (Number.isFinite(+v) && +v >= 1 && +v <= list.length) return +v - 1;
+          const s = low(v).trim();
+          if (!s) return -1;
+          const exact = list.findIndex(x => low(nameOf(x)) === s); // «Доп. ланч» не должен стать «Ланчем»
+          return exact >= 0 ? exact : list.findIndex(x => low(nameOf(x)).includes(s) || s.includes(low(nameOf(x))));
+        };
+        const items = (Array.isArray(j.items) ? j.items : []).map(x => {
+          const i = rows.length === 1 ? 0 : pickIdx(x.client, rows, r => r.cl.name), r = rows[i];
+          const k = [x.kcal ?? x.k, x.protein ?? x.b, x.fat ?? x.f, x.carbs ?? x.c].map(num);
+          if (!r || !k.some(v => v !== '')) return null;
+          const mi = pickIdx(x.meal, menus[i], d => d.m.name);
+          return { i, r, k, dm: menus[i][mi], name: String(x.dish || '').trim() || 'запись' };
+        }).filter(Boolean);
+        const stems = t => low(t).split(/[^a-zа-я]+/).filter(w => w.length >= 4).map(w => w.slice(0, 5));
+        // насколько уверенно: приём назван в записи / блюдо есть в меню приёма / ни то ни другое — поставлено по порядку
+        const howOf = (name, dm) => (low(name).includes(low(dm.m.name)) ? 'meal' : stems(name).some(w => stems(dm.text).includes(w)) ? 'dish' : 'order');
+        const targeted = new Set(items.filter(x => x.dm).map(x => x.r.o.id + '|' + x.dm.m.id));
+        const seen = new Map(), groups = new Map(), skipped = [];
+        for (const x of items) {
+          let { dm } = x;
+          if (!dm) { skipped.push(`${rows.length > 1 ? x.r.cl.name + ': ' : ''}${x.name} (${x.k.map(v => (v === '' ? '—' : v)).join(' / ')})`); continue; }
+          let key = x.r.o.id + '|' + dm.m.id;
+          let how = howOf(x.name, dm);
+          // то же блюдо второй раз в тот же приём (ИИ сложил «Куриный сай» дважды в обед) — это следующий свободный приём по порядку
+          if ((seen.get(key) || []).includes(low(x.name))) {
+            const list = menus[x.i], at = list.indexOf(dm);
+            const free = [...list.slice(at + 1), ...list.slice(0, at).reverse()].find(y => !targeted.has(x.r.o.id + '|' + y.m.id));
+            if (free) { dm = free; key = x.r.o.id + '|' + dm.m.id; targeted.add(key); how = 'order'; }
+          }
+          seen.set(key, [...(seen.get(key) || []), low(x.name)]);
+          if (!groups.has(key)) groups.set(key, { r: x.r, meal: dm.m, menu: dm.text.replace(/\s*\n+\s*/g, '; '), dishes: [], parts: [], how: 'meal', on: true });
+          const g = groups.get(key);
+          g.dishes.push(x.name);
+          g.parts.push({ k: x.k });
+          if (['meal', 'dish', 'order'].indexOf(how) > ['meal', 'dish', 'order'].indexOf(g.how)) g.how = how; // в группе — самое неуверенное
+        }
+        // порядок — как приёмы в меню клиента
+        st.groups = [...groups.values()].map(g => ({ ...g, k: sumOf(g.parts) }))
+          .sort((a, b) => rows.indexOf(a.r) - rows.indexOf(b.r) || menus[rows.indexOf(a.r)].findIndex(x => x.m.id === a.meal.id) - menus[rows.indexOf(b.r)].findIndex(x => x.m.id === b.meal.id));
+        st.skipped = skipped;
+        st.notes = String(j.notes || '').trim();
+        fillModal(m, view());
+      } catch (err) {
+        toast('ИИ: ' + err.message, 'bad', 8000);
+        e.target.disabled = false;
+        e.target.textContent = 'Разобрать (ИИ)';
+      }
+    });
+    $('[data-m="apply"]', root)?.addEventListener('click', () => {
+      const who = new Map();
+      for (const g of st.groups.filter(y => y.on)) {
+        const cd = menuClient(D, f.id, g.r.o.id, true);
+        (cd.k = cd.k || {})[g.meal.id] = g.k;
+        who.set(g.r.o.id, g.r);
+      }
+      for (const r of who.values()) markClientKbjuManual(D, f, r.o.id, r.variant);
+      menuBlock(D, f.id, true).at = localIso();
+      closeModal();
+      commit(`Меню «${f.name}» на ${fmt(D)}: КБЖУ вставлен текстом — ${[...who.values()].map(r => r.cl.name).join(', ')}`, 'menu');
+      toast(`КБЖУ вставлен: ${who.size} ${who.size === 1 ? 'клиент' : 'клиентов'}`, 'ok');
+    });
+  } });
+}
+
 function touchMenuFormats() { db.menu.formatsAt = localIso(); }
 function refreshMenuPreview() {
   const el = $('#menuPreview');
@@ -4953,6 +5614,216 @@ function adminCombosCard() {
       <div class="row mt"><input class="input" id="comboNewName" placeholder="Название, например «Детокс-марафон»" style="flex:1">
       <button class="btn btn-green btn-sm" data-act="comboNew">+ Создать</button></div></div>
     </div></div>`;
+}
+// «Сменить программу» у действующего заказа: доставки до даты остаются на прежней программе, с даты — новая.
+// Записывается этапами заказа (как «горки»): кухня, фасовка и бирки берут программу дня; дни и дата окончания не меняются
+function openChangeProgram(o) {
+  if (!o) return;
+  const cl = CLIENTS.get(o.clientId);
+  if (comboOf(o.program) || (o.stages && !o.stages.every(x => isProgramName(x.label)))) {
+    toast('Это программа с этапами — программу меняйте через «✎ Изменить»', 'bad', 6000);
+    return;
+  }
+  const k = calc(o);
+  const progs = db.lists.programs.filter(p => !comboOf(p)).sort(progCmp);
+  const st = { prog: '', d: Math.max(TODAY + 1, k.start) }; // по умолчанию — с завтрашней доставки
+  const done = () => countLE(k.list, st.d - 1);
+  const was = () => stageAt(o, done() + 1)?.label || o.program;
+  const info = () => {
+    const n = done(), next = k.list.find(x => x >= st.d);
+    if (n >= o.days || next === undefined) return `<div class="warn">С ${fmt(st.d)} доставок по заказу не осталось — менять нечего, оформите продление.</div>`;
+    return `<div class="preview">Доставки ${n + 1}–${o.days} (с ${fmt(next)} по ${fmt(k.end)}) — <b>${esc(st.prog ? progLabel(st.prog) : '…')}</b>${n ? `, первые ${n} остаются <b>${esc(progLabel(was()))}</b>` : ''}.
+      Количество дней и дата окончания не меняются${n ? '' : ' — меняется программа всего заказа'}.</div>`;
+  };
+  openModal({
+    title: `Сменить программу — ${cl?.name || ''}`,
+    body: `<div class="muted" style="margin-bottom:10px">Сейчас: <b>${esc(progLabel(was()))}</b>, ${fmt(k.start)} — ${fmt(k.end)}, доставлено ${countLE(k.list, TODAY)} из ${o.days}</div>
+      <div class="form">
+        <label class="field"><span>Новая программа</span><select class="input" data-m="prog"><option value="">— выберите —</option>
+          ${progs.filter(p => p.toLowerCase() !== String(was()).toLowerCase()).map(p => `<option value="${esc(p)}">${esc(progLabel(p))}</option>`).join('')}</select></label>
+        <label class="field"><span>С даты</span><input class="input" type="date" data-m="from" value="${isoOf(st.d)}" min="${isoOf(k.start)}"></label>
+      </div>
+      <div id="cpInfo" class="mt">${info()}</div>`,
+    foot: `<button class="btn" data-act="closeModal">Отмена</button><button class="btn btn-green" data-m="ok">Сменить</button>`,
+    onMount(root) {
+      const upd = () => { $('#cpInfo', root).innerHTML = info(); };
+      $('[data-m="prog"]', root).addEventListener('change', e => { st.prog = e.target.value; upd(); });
+      $('[data-m="from"]', root).addEventListener('change', e => { const v = dn(e.target.value); if (Number.isFinite(v)) st.d = Math.max(v, k.start); upd(); });
+      $('[data-m="ok"]', root).addEventListener('click', () => {
+        if (!st.prog) { toast('Выберите новую программу', 'bad'); return; }
+        const err = changeProgramFrom(o, st.prog, st.d);
+        if (err) { toast(err, 'bad'); return; }
+        closeModal();
+        commit(`Смена программы: ${cl?.name || ''}, ${progLabel(o.progCh.from)} → ${progLabel(st.prog)} с ${fmt(st.d)}`, 'order');
+        toast('Программа изменена', 'ok');
+      });
+    },
+  });
+}
+// смена программы с даты d (без сохранения); возвращает текст ошибки или ''
+function changeProgramFrom(o, prog, d) {
+  if (comboOf(o.program) || (o.stages && !o.stages.every(x => isProgramName(x.label)))) return 'Это программа с этапами — меняйте через «✎ Изменить»';
+  const k = calc(o), n = countLE(k.list, d - 1);
+  if (n >= o.days || !k.list.some(x => x >= d)) return 'С этой даты доставок по заказу не осталось';
+  const old = stageAt(o, n + 1)?.label || o.program;
+  // первые n доставок — как было (с прежними этапами), остальные — новая программа
+  const base = o.stages && o.stages.length ? o.stages : [{ label: o.program, days: o.days }];
+  const stages = [];
+  let left = n;
+  for (const x of base) { if (left <= 0) break; stages.push({ label: x.label, days: Math.min(x.days, left) }); left -= x.days; }
+  stages.push({ label: prog, days: o.days - n });
+  const merged = stages.reduce((a, x) => { const p = a[a.length - 1]; if (p && p.label.toLowerCase() === x.label.toLowerCase()) p.days += x.days; else a.push({ ...x }); return a; }, []);
+  o.program = prog;
+  if (merged.length > 1) o.stages = merged; else delete o.stages;
+  o.progCh = { at: localIso(), from: old };
+  touch(o);
+  addToLists({ program: prog });
+  audit(`Смена программы: ${CLIENTS.get(o.clientId)?.name || ''} ${progLabel(old)} → ${progLabel(prog)} с ${fmt(d)} (с ${n + 1}-й доставки)`, { kind: 'order', cid: o.clientId });
+  return '';
+}
+
+/* ---------------------------------------------------------------- передача дней */
+// клиент отдаёт часть оставшихся дней другому (существующему или новому) — это не продажа и не продление
+const daysLeftOf = o => (o.stopped ? 0 : Math.max(0, o.days - countLE(calc(o).list, TODAY))); // сегодняшняя доставка уже ушла
+// программа последних n дней заказа (у этапов — этап, на который они приходятся)
+const progOfLast = (o, n) => { const l = stageAt(o, o.days - n + 1)?.label; return l && isProgramName(l) ? canonProgram(l) : o.program; };
+function cutLastDays(o, n) {
+  if (o.stages && o.stages.length) {
+    let left = n;
+    const st = o.stages.map(x => ({ ...x }));
+    for (let i = st.length - 1; i >= 0 && left > 0; i--) { const t = Math.min(st[i].days, left); st[i].days -= t; left -= t; }
+    const kept = st.filter(x => x.days > 0);
+    if (kept.length) o.stages = kept; else delete o.stages;
+  }
+  o.days -= n;
+}
+// src — заказ, с которого списываем (или null — у кого, неизвестно); to — {cid} или {name, phone, address}; x — {start, time, program}
+// возвращает текст ошибки или { o, cl, log }
+function transferDays(src, n, to, x) {
+  const srcCl = src ? CLIENTS.get(src.clientId) : null;
+  const toCl = to.cid ? CLIENTS.get(to.cid) : null;
+  const prog = canonProgram(normProg(x.program || (src ? progOfLast(src, n) : '')));
+  if (!(n > 0)) return 'Сколько дней передать?';
+  if (src && n > daysLeftOf(src)) return `У ${srcCl?.name || 'клиента'} осталось только ${daysLeftOf(src)} дн.`;
+  if (!toCl && (!String(to.name || '').trim() || !String(to.phone || '').trim())) return 'Кому передать: выберите клиента или укажите ФИО и телефон нового';
+  if (toCl && src && toCl.id === src.clientId) return 'Нельзя передать дни тому же клиенту';
+  if (!prog) return 'Укажите программу';
+  if (!isoOk(x.start)) return 'Укажите, с какой даты готовить';
+  const now = localIso();
+  let cl = toCl;
+  if (!cl) {
+    cl = { id: uid('c_'), name: String(to.name).trim().replace(/\s+/g, ' '), phone: String(to.phone).trim(), address: String(to.address || '').trim(),
+      comment: '', tags: [], aiAllow: [], createdAt: now, updatedAt: now };
+    db.clients.push(cl);
+  }
+  const prev = toCl ? lastOrderOf(toCl) : null; // курьер и аллерген — свои у получателя
+  const fromName = srcCl?.name || String(x.fromName || '').trim();
+  if (src) {
+    const was = src.days;
+    cutLastDays(src, n);
+    touch(src);
+    audit(`Передача дней: ${fromName} → ${cl.name}, ${n} дн. (у ${fromName} дней ${was} → ${src.days})`, { kind: 'days-', cid: src.clientId, days: -n });
+  }
+  const o = {
+    id: uid('o_'), clientId: cl.id, program: prog, time: x.time === 'вечер' ? 'вечер' : x.time === 'утро' ? 'утро' : (src?.time || 'утро'), timeAt: '',
+    courier: prev?.courier || '', persons: 0, company: '', manager: x.manager || src?.manager || operator(), start: x.start, days: n,
+    weekdays: src && (src.dayMode || 'week') === 'week' ? src.weekdays.slice() : [1, 1, 1, 1, 1, 1, 1], dayMode: 'week', customDays: [],
+    allergen: prev?.allergen || '', note: '', holidays: src?.holidays === 'no' ? 'no' : 'yes', holidayCal: src?.holidayCal || db.settings.holidayCalDefault || 'uz',
+    freezes: [], skips: [], stopped: null, transfer: { fromOrder: src?.id || '', fromClient: src?.clientId || '', fromName, days: n, at: now },
+    createdAt: now, updatedAt: now,
+  };
+  db.orders.push(o);
+  if (toCl) clearReturnTag(toCl);
+  addToLists(o);
+  audit(`Передача дней: ${cl.name} получил ${n} дн. от ${fromName || 'другого клиента'} (${progLabel(prog)} с ${fmt(dn(x.start))})`, { kind: 'days+', cid: cl.id, days: n });
+  return { o, cl, log: `Передача дней: ${fromName || '?'} → ${cl.name}${toCl ? '' : ' (новый клиент)'}, ${n} дн. ${progLabel(prog)} с ${fmt(dn(x.start))} — не продажа` };
+}
+// окно «Передать дни»; src — заказ, с которого передаём (null — выбрать клиента); pre — заполнить (из «Правок из чата»)
+function openTransferDays(src = null, pre = {}) {
+  const st = {
+    src, n: pre.n || 0, toId: pre.toId || '', isNew: !pre.toId && !!pre.name, name: pre.name || '', phone: pre.phone || '', address: pre.address || '',
+    start: pre.start || isoOf(TODAY + 1), time: pre.time || src?.time || 'утро', program: '', fromQ: pre.fromQ || '', toQ: pre.name || pre.phone || '',
+  };
+  const srcLine = o => { const k = calc(o); return `${esc(progLabel(o.program))}, ${fmt(k.start)} — ${fmt(k.end)}, осталось <b>${daysLeftOf(o)}</b> дн.`; };
+  const fromList = () => {
+    if (st.src) return '';
+    const cs = st.fromQ.trim().length >= 2 ? findClientsByName(st.fromQ, st.fromQ).slice(0, 8) : [];
+    const os = cs.flatMap(c => openOrdersOf(c).filter(o => daysLeftOf(o) > 0).map(o => ({ o, c })));
+    return os.length ? os.map(({ o, c }) => `<label class="row small" style="gap:6px"><input type="radio" name="trFrom" value="${esc(o.id)}"> <b>${esc(c.name)}</b> · ${srcLine(o)}</label>`).join('')
+      : st.fromQ.trim().length >= 2 ? '<div class="muted small">Нет клиента с действующим заказом и оставшимися днями</div>' : '';
+  };
+  const toList = () => {
+    const cs = st.toQ.trim().length >= 2 ? findClientsByName(st.toQ, st.toQ).filter(c => !st.src || c.id !== st.src.clientId).slice(0, 6) : [];
+    return `${cs.map(c => `<label class="row small" style="gap:6px"><input type="radio" name="trTo" value="${esc(c.id)}" ${st.toId === c.id ? 'checked' : ''}> <b>${esc(c.name)}</b> · ${esc(firstLine(c.phone || ''))} · ${esc(STATUS[CINFO.get(c.id).status].toLowerCase())}</label>`).join('')}
+      <label class="row small" style="gap:6px"><input type="radio" name="trTo" value="" ${st.isNew ? 'checked' : ''}> <b>＋ Новый клиент</b></label>`;
+  };
+  const info = () => {
+    const o = st.src, to = st.toId ? CLIENTS.get(st.toId) : null, n = st.n;
+    const lines = [];
+    if (o && n > 0) lines.push(n > daysLeftOf(o) ? `<span style="color:var(--red,#c0392b)">У ${esc(CLIENTS.get(o.clientId)?.name || '')} осталось только ${daysLeftOf(o)} дн.</span>`
+      : `У <b>${esc(CLIENTS.get(o.clientId)?.name || '')}</b>: дней ${o.days} → <b>${o.days - n}</b> (последние ${n} дн. снимаются с конца заказа)`);
+    const who = to ? to.name : st.isNew ? (st.name || 'новый клиент') : '';
+    if (who && n > 0) lines.push(`<b>${esc(who)}</b>${st.isNew ? ' (новый клиент)' : ''}: заказ ${esc(progLabel(st.program || (o ? progOfLast(o, Math.min(n, o.days)) : '')) || '—')} на <b>${n}</b> дн. с ${isoOk(st.start) ? fmt(dn(st.start)) : '—'}, ${st.time}`);
+    lines.push('<span class="muted">Передача — не продажа и не продление: в статистику продаж не идёт.</span>');
+    return lines.map(t => `<div>${t}</div>`).join('');
+  };
+  openModal({
+    title: 'Передача дней',
+    body: `<div class="form">
+      <div class="field full"><span>От кого</span>${st.src ? `<div><b>${esc(CLIENTS.get(st.src.clientId)?.name || '')}</b> · ${srcLine(st.src)}</div>`
+        : `<input class="input" data-m="fromQ" placeholder="ФИО или телефон" value="${esc(st.fromQ)}"><div id="trFromList" class="mt">${fromList()}</div>`}</div>
+      <label class="field"><span>Сколько дней</span><input class="input" type="number" min="1" data-m="n" value="${st.n || ''}" style="width:110px"></label>
+      <label class="field"><span>С какой даты готовить</span><input class="input" type="date" data-m="start" value="${esc(st.start)}"></label>
+      <div class="field full"><span>Кому</span><input class="input" data-m="toQ" placeholder="ФИО или телефон — найдём в базе" value="${esc(st.toQ)}">
+        <div id="trToList" class="mt">${toList()}</div>
+        <div id="trNew" class="form mt" ${st.isNew ? '' : 'hidden'}>
+          <label class="field"><span>ФИО *</span><input class="input" data-m="name" value="${esc(st.name)}"></label>
+          <label class="field"><span>Телефон *</span><input class="input" data-m="phone" value="${esc(st.phone)}"></label>
+          <label class="field full"><span>Адрес и как найти</span><textarea class="input" data-m="address" rows="2">${esc(st.address)}</textarea></label></div></div>
+      <label class="field"><span>Программа</span><input class="input" data-m="program" list="dl-programs" placeholder="как у отдающего"></label>
+      <label class="field"><span>Время</span><select class="input" data-m="time"><option ${st.time === 'утро' ? 'selected' : ''}>утро</option><option ${st.time === 'вечер' ? 'selected' : ''}>вечер</option></select></label>
+    </div><div id="trInfo" class="preview mt">${info()}</div>${datalists()}`,
+    foot: `<button class="btn" data-act="closeModal">Отмена</button><button class="btn btn-green" data-m="ok">Передать</button>`,
+    onMount(root) {
+      const upd = () => { $('#trInfo', root).innerHTML = info(); };
+      const val = n => root.querySelector(`[data-m="${n}"]`)?.value || '';
+      for (const k of ['n', 'start', 'name', 'phone', 'address', 'program', 'time']) {
+        root.querySelector(`[data-m="${k}"]`)?.addEventListener('input', () => { st[k] = k === 'n' ? parseInt(val(k), 10) || 0 : val(k).trim(); upd(); });
+      }
+      root.querySelector('[data-m="time"]').addEventListener('change', () => { st.time = val('time'); upd(); });
+      const bindTo = () => root.querySelectorAll('[name="trTo"]').forEach(r => r.addEventListener('change', () => {
+        st.toId = r.value; st.isNew = !r.value;
+        $('#trNew', root).hidden = !st.isNew;
+        if (st.isNew && !st.name && !/\d{5}/.test(st.toQ)) { st.name = st.toQ.trim(); root.querySelector('[data-m="name"]').value = st.name; }
+        if (st.isNew && !st.phone && /\d{5}/.test(st.toQ)) { st.phone = st.toQ.trim(); root.querySelector('[data-m="phone"]').value = st.phone; }
+        // получатель уже питается — по умолчанию после окончания его заказа
+        const last = st.toId ? lastOrderOf(CLIENTS.get(st.toId)) : null;
+        if (last && calc(last).end >= TODAY + 1) { st.start = isoOf(calc(last).end + 1); root.querySelector('[data-m="start"]').value = st.start; }
+        upd();
+      }));
+      root.querySelector('[data-m="toQ"]').addEventListener('input', e => { st.toQ = e.target.value; if (!st.isNew) st.toId = ''; $('#trToList', root).innerHTML = toList(); bindTo(); upd(); });
+      bindTo();
+      const fq = root.querySelector('[data-m="fromQ"]');
+      const bindFrom = () => root.querySelectorAll('[name="trFrom"]').forEach(r => r.addEventListener('change', () => {
+        st.src = ORDERS.get(r.value) || null;
+        if (st.src && !pre.time) { st.time = st.src.time; root.querySelector('[data-m="time"]').value = st.time; }
+        upd();
+      }));
+      fq?.addEventListener('input', () => { st.fromQ = fq.value; st.src = null; $('#trFromList', root).innerHTML = fromList(); bindFrom(); upd(); });
+      bindFrom();
+      $('[data-m="ok"]', root).addEventListener('click', () => {
+        if (!st.src && !pre.noSrcOk) { toast('Выберите, у кого списать дни', 'bad'); return; }
+        if (!st.toId && !st.isNew) { toast('Кому передать: выберите клиента или «＋ Новый клиент»', 'bad'); return; }
+        const r = transferDays(st.src, st.n, st.toId ? { cid: st.toId } : { name: st.name, phone: st.phone, address: st.address },
+          { start: st.start, time: st.time, program: st.program, fromName: pre.fromName });
+        if (typeof r === 'string') { toast(r, 'bad', 6000); return; }
+        closeModal();
+        commit(r.log, 'order');
+        toast('Дни переданы', 'ok');
+        openClientModal(r.cl.id);
+      });
+    },
+  });
 }
 function mergeSeq(name, seq) {
   const first = seq[0], last = seq[seq.length - 1];
@@ -5803,12 +6674,16 @@ function prepareClientsImport(inc, fields) {
 }
 // Клиенты из старого Excel, которые уже есть в базе (тот же телефон + ФИО), склеиваются с ними.
 function remapLegacy(inc) {
-  const local = new Map(db.clients.map(c => [phoneKey(c.phone) + '|' + nameKey(c.name), c.id]));
-  const map = new Map();
-  inc.clients = inc.clients.filter(c => {
-    const id = local.get(phoneKey(c.phone) + '|' + nameKey(c.name));
-    if (id && id !== c.id) { map.set(c.id, id); return false; }
-    return true;
+  const local = new Map(db.clients.map(c => [phoneKey(c.phone) + '|' + nameKey(c.name), c]));
+  const map = new Map(), kept = new Set();
+  // клиент, заведённый в программе, едет в файл своей карточкой: при «Заменить базу» он иначе пропадал, а его заказы оставались без клиента
+  inc.clients = inc.clients.flatMap(c => {
+    const l = local.get(phoneKey(c.phone) + '|' + nameKey(c.name));
+    if (!l || l.id === c.id) return [c];
+    map.set(c.id, l.id);
+    if (kept.has(l.id)) return [];
+    kept.add(l.id);
+    return [l];
   });
   for (const o of inc.orders) if (map.has(o.clientId)) o.clientId = map.get(o.clientId);
 }
@@ -5933,7 +6808,7 @@ function showImportPreview(filename, kind, inc, raw, stats) {
         b.disabled = true;
         try { await api('POST', '/api/backup', JSON.stringify({ reason: 'before_import' })); } catch { /* базы ещё нет */ }
         const seenBefore = new Set(db.log.map(l => l.at + l.text));
-        const operator = db.settings.operator;
+        const operator = db.settings.operator, launch = db.meta.launchAt;
         if (kind === 'legacy' && root.querySelector('[name="lmode"]:checked')?.value === 'clients') {
           inc.orders = [];
           inc.lists = { ...inc.lists, managers: uniq(inc.clients.map(c => c.manager).filter(Boolean)), couriers: uniq(inc.clients.map(c => c.courier).filter(Boolean)) };
@@ -5948,6 +6823,8 @@ function showImportPreview(filename, kind, inc, raw, stats) {
         for (const k of ['handoff', 'sheet', 'fileToday']) delete db[k];
         db.meta.lastReceived = { at: localIso(), who: h ? h.who : '', file: filename };
         if (kind === 'legacy') db.meta.legacyAt = localIso();
+        // запуск программы — первая загрузка Excel; повторная загрузка его не сдвигает (иначе строки Excel за эти дни стали бы продажами)
+        if (kind === 'legacy' || launch) db.meta.launchAt = launch || db.meta.launchAt || localIso().slice(0, 10);
         const fresh = db.log.filter(l => !seenBefore.has(l.at + l.text));
         db.lists.programs = uniq([...db.lists.programs, ...DEFAULT_PROGRAMS]);
         closeModal();
@@ -5972,6 +6849,9 @@ const ACT = {
   openClient: d => openClientModal(d.id),
   newOrder: d => openOrderForm({ clientId: d.id }),
   renewOrder: d => { const o = ORDERS.get(d.id); if (o) openOrderForm({ clientId: o.clientId, prefill: o }); },
+  changeProg: d => openChangeProgram(ORDERS.get(d.id)),
+  chatEdits: () => openChatEdits(),
+  transferDays: d => openTransferDays(d.id ? ORDERS.get(d.id) || null : null),
   editOrder: d => { const o = ORDERS.get(d.id); if (o) openOrderForm({ clientId: o.clientId, order: o }); },
   freezeOrder: d => { const o = ORDERS.get(d.id); if (o) openFreeze(o); },
   shiftsOrder: d => { const o = ORDERS.get(d.id); if (o) openFreeze(o, 'shifts'); },
@@ -6232,6 +7112,24 @@ const ACT = {
   mcCalc: d => aiCalcAbs(S.md, menuFormat(S.mf), '', d.o),
   mcRec: d => { S.recO = { ...(S.recO || {}), [d.o]: !recOpen(d.o) }; render(); },
   mcGrams: d => aiGramsFor(S.md, menuFormat(S.mf), d.o),
+  mcKbjuText: d => openKbjuText(menuFormat(S.mf), d.o),
+  menuKbjuText: () => openKbjuText(menuFormat(S.mf)),
+  mcKbjuClear: d => {
+    const f = menuFormat(S.mf), cl = CLIENTS.get(ORDERS.get(d.o)?.clientId);
+    confirmBox('Стереть КБЖУ', `Стереть КБЖУ клиента <b>${esc(cl?.name || '')}</b> в меню «${esc(f.name)}» на ${fmt(S.md)}?
+      Блюда останутся. На карточке будет общий КБЖУ, если он вписан.`, 'Стереть', () => {
+      clearKbju(S.md, f, d.o);
+      commit(`Меню «${f.name}» на ${fmt(S.md)}: стёрт КБЖУ — ${cl?.name || ''}`, 'menu');
+    });
+  },
+  menuKbjuClear: () => {
+    const f = menuFormat(S.mf);
+    confirmBox('Стереть все КБЖУ', `Стереть все КБЖУ меню «${esc(f.name)}» на ${fmt(S.md)}${f.perClient ? ' — общие и у всех клиентов' : ''}?
+      Блюда останутся, ИИ заново посчитает только после изменения блюд или по кнопке.`, 'Стереть все', () => {
+      const n = clearKbju(S.md, f);
+      commit(`Меню «${f.name}» на ${fmt(S.md)}: стёрты все КБЖУ (${n})`, 'menu');
+    });
+  },
   courierSubs: d => openSubs(d.o || ''),
   subDel: d => {
     db.settings.courierSubs = subsList().filter(r => r.id !== d.id);
