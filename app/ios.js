@@ -617,8 +617,20 @@
     });
   }
   async function setup() {
-    const k = (location.hash.match(/[#&]k=([\w-]+)/) || [])[1];
-    if (!k) { screen(`${LOGO}<div>Откройте программу по ссылке, которую вам прислали из «Установщика».</div>`); return new Promise(() => {}); }
+    const kOf = s => (String(s).match(/[#&]k=([\w-]+)/) || [])[1];
+    let k = kOf(location.hash);
+    if (!k) { // ярлык открылся без личной части ссылки — даём вставить её
+      k = await new Promise(done => {
+        const el = screen(`${LOGO}<div style="margin-bottom:12px">Вставьте ссылку, которую вам прислали из «Установщика» (нажмите и удерживайте поле → «Вставить»):</div>
+          <textarea id="iosLinkIn" rows="4" style="width:100%;font-size:13px;padding:8px;border:1px solid #ccc;border-radius:10px"></textarea>
+          <div id="iosLinkErr" style="color:#c0392b;min-height:20px;margin-top:6px"></div>
+          <button id="iosLinkGo" style="font-size:17px;padding:10px 28px;border:0;border-radius:10px;background:#5da83c;color:#fff">Дальше</button>`);
+        el.querySelector('#iosLinkGo').onclick = () => {
+          const v = kOf(el.querySelector('#iosLinkIn').value);
+          if (v) done(v); else el.querySelector('#iosLinkErr').textContent = 'Это не ссылка из «Установщика»';
+        };
+      });
+    }
     if (!standalone() && /iPhone|iPad/.test(navigator.userAgent)) await askInstall();
     const cfg = await askPin(k);
     await store.writeJson('local.json', { role: cfg.role || 'om', roleLocked: true, operator: cfg.operator || '', inst: cfg.inst || '', pin: cfg.pin || '', readerOnly: !!cfg.readerOnly });
