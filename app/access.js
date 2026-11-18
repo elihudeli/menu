@@ -384,7 +384,8 @@ const ACCESS_ACT = {
         const r = await api('POST', '/api/sync/publish', JSON.stringify({ note }));
         addLog(`Опубликована версия программы ${r.version}`, 'admin');
         persist();
-        toast(`Опубликовано: ${r.files} файлов изменено`, 'ok', 8000);
+        toast(`Опубликовано: ${r.files} файлов изменено${r.site ? ' · iOS / Сайт версия тоже обновлена' : ''}`, 'ok', 8000);
+        if (r.siteError) toast('iOS / Сайт версию обновить не удалось: ' + r.siteError, 'bad', 15000);
         render();
       } catch (e) { toast('Не удалось опубликовать: ' + e.message, 'bad', 10000); }
     }),
