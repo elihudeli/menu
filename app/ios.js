@@ -273,7 +273,7 @@
     if (!who || now() - lastReg < REG_EVERY) return;
     lastReg = now();
     try {
-      const b = await putBlob(enc.encode(JSON.stringify({ ...me(), inst, role, app: 'phone', seen: nowIso() })));
+      const b = await putBlob(enc.encode(JSON.stringify({ ...me(), inst, role, app: 'phone', web: true, seen: nowIso() })));
       for (let a = 0; a < 4; a++) { // поверх последней версии: устройства не затирают друг друга
         const h = await head('devices');
         const ent = h ? await entries(await treeOf(h)) : {};
