@@ -1578,7 +1578,9 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
         <select class="input" name="saleKind" style="width:auto"><option value="">авто — ${esc(SALE_KINDS[orderKindAuto(order)])}</option>
           ${Object.entries(SALE_KINDS).map(([k, l]) => `<option value="${k}" ${order.saleKind === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <span class="muted small">дата продажи</span><input class="input" type="date" name="soldAt" style="width:auto" value="${esc(isDraftOrder(order) ? '' : saleIso(order))}"></div>
-        ${isDraftOrder(order) ? '<div class="muted small">Строка из Excel: когда её продали, неизвестно — в статистику не идёт, пока не укажете дату продажи.</div>' : ''}</div>` : ''}
+        ${isDraftOrder(order) ? '<div class="muted small">Строка из Excel: когда её продали, неизвестно — в статистику не идёт, пока не укажете дату продажи.</div>' : ''}</div>`
+    : `<div class="field full"><span>В статистике продаж</span><select class="input" name="saleKind" style="width:auto">
+        <option value="">авто — ${newClient ? 'продажа' : 'по истории клиента'}</option>${Object.entries(SALE_KINDS).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>`}
       <div class="field full"><label class="row" style="gap:6px"><input type="checkbox" name="isTransfer" ${order?.transfer ? 'checked' : ''} style="width:16px;height:16px">
         <span>Передача дней от другого клиента — не продажа</span></label>
         <input class="input mt" name="transferFrom" placeholder="от кого (ФИО)" value="${esc(order?.transfer?.fromName || '')}" ${order?.transfer ? '' : 'hidden'}>
@@ -1855,8 +1857,9 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
         } else {
           const now = localIso();
           const copies = Math.max(1, Math.min(10, parseInt(root.querySelector('[name="copies"]')?.value, 10) || 1));
+          const sk = root.querySelector('[name="saleKind"]')?.value || ''; // продажа / продление — выбрано при оформлении, иначе авто
           for (let n = 0; n < copies; n++) {
-            db.orders.push({ id: uid('o_'), clientId: cid, ...rest, ...(stg ? { stages: stg.map(z => ({ ...z })) } : {}), ...(tr ? { transfer: { ...tr, days: rest.days } } : {}), freezes: [], skips: [], stopped: null, createdAt: now, updatedAt: now });
+            db.orders.push({ id: uid('o_'), clientId: cid, ...rest, ...(SALE_KINDS[sk] ? { saleKind: sk } : {}), ...(stg ? { stages: stg.map(z => ({ ...z })) } : {}), ...(tr ? { transfer: { ...tr, days: rest.days } } : {}), freezes: [], skips: [], stopped: null, createdAt: now, updatedAt: now });
           }
           clearReturnTag(CLIENTS.get(cid)); // снова купил — «Возврат» больше не актуален
           if (copies > 1) logText = (logText || '') + ` · пакетов: ${copies}`;
@@ -5141,7 +5144,7 @@ function openKbjuText(f, oid = '') {
     const md = menuVariant(D, f.id, r.variant, false), cd = menuClient(D, f.id, r.o.id, false);
     return clientMeals(f, r.cl).map(m => ({ m, text: String(cd.d[m.id] || '').trim() || md.d[m.id] || mainDish(D, m.name, f) || '' }));
   };
-  const HOW = { meal: 'приём указан', dish: 'по блюду', order: 'по порядку — проверьте' };
+  const HOW = { meal: 'приём указан', dish: 'по блюду', order: 'по порядку — проверьте', extra: 'новый доп — добавлю клиенту' };
   const sumOf = list => [0, 1, 2, 3].map(i => r10(list.reduce((a, x) => (x.k[i] === '' ? a : (a === '' ? 0 : a) + x.k[i]), '')));
   const preview = () => {
     const gs = st.groups;
@@ -5200,6 +5203,7 @@ ${rows.map((r, i) => `${i + 1}: ${r.cl.name}\n${menus[i].map((x, j) => `   ${j +
   • в записи прямо назван приём («Завтрак», «Обед», «Комплимент — фрукты») — этот приём, how "meal";
   • иначе ищи блюдо в меню клиента по смыслу (одно блюдо приёма может быть записано отдельно: «Трайфл» и «Фрукты» — части комплимента «Трайфл с арахисом; Фруктовая нарезка») — how "dish";
   • блюда нет в меню — определи приём по порядку записей: текст обычно идёт по приёмам; запись стоит между записями уже найденных приёмов — бери подходящий приём из меню между ними (свободный, у которого своей записи нет; напиток рядом с десертом — тот же приём) — how "order";
+  • в записи назван доп-приём («Доп. ужин», «доп ланч», «Перекус»), которого нет в меню клиента — meal пиши словами, например "Доп. ужин";
   • совсем не понять — meal 0.
 - Числа бери ровно как в тексте (знак ≈ не важен), ничего не пересчитывай и не придумывай; чего нет — null.
 Текст:
@@ -5213,6 +5217,12 @@ ${st.text.trim()}
         const j0 = JSON.parse(st.raw.replace(/^```(?:json)?|```$/gm, '').trim());
         const j = Array.isArray(j0) ? { items: j0 } : j0;
         const low = t => String(t).toLowerCase().replace(/ё/g, 'е');
+        // «Доп ужин — …», «доп. ланч», «перекус» → название допа как у клиента: «Доп. ужин»
+        const extraOf = t => {
+          const m = low(t).match(/(?:^|[^а-яa-z])(доп)\.?\s*([а-я]+)|(перекус)/);
+          if (!m) return '';
+          return m[3] ? 'Перекус' : 'Доп. ' + m[2];
+        };
         // ИИ иногда пишет номер словами или именем («Тошпулатов Ислом», «Завтрак») — находим и так
         const pickIdx = (v, list, nameOf) => {
           if (Number.isFinite(+v) && +v >= 1 && +v <= list.length) return +v - 1;
@@ -5226,18 +5236,30 @@ ${st.text.trim()}
           const k = [x.kcal ?? x.k, x.protein ?? x.b, x.fat ?? x.f, x.carbs ?? x.c].map(num);
           if (!r || !k.some(v => v !== '')) return null;
           const mi = pickIdx(x.meal, menus[i], d => d.m.name);
-          return { i, r, k, dm: menus[i][mi], name: String(x.dish || '').trim() || 'запись' };
+          // ИИ назвал приём допом («Доп. ужин») — это доп, а не «Ужин» по совпадению слова; без приёма — доп по названию записи
+          const exMeal = f.perClient && !/^\s*\d*\s*$/.test(String(x.meal ?? '')) ? extraOf(x.meal) : '';
+          let dm = exMeal ? null : menus[i][mi];
+          if (!dm && f.perClient) { // доп-приёма у клиента нет — добавим его клиенту при вставке
+            const ex = exMeal || extraOf(x.dish);
+            if (ex) dm = menus[i].find(d => low(d.m.name) === low(ex)) || { m: meal('x_' + low(ex), ex), text: '', extra: ex };
+          }
+          return { i, r, k, dm, name: String(x.dish || '').trim() || 'запись' };
         }).filter(Boolean);
         const stems = t => low(t).split(/[^a-zа-я]+/).filter(w => w.length >= 4).map(w => w.slice(0, 5));
         // насколько уверенно: приём назван в записи / блюдо есть в меню приёма / ни то ни другое — поставлено по порядку
         const howOf = (name, dm) => (low(name).includes(low(dm.m.name)) ? 'meal' : stems(name).some(w => stems(dm.text).includes(w)) ? 'dish' : 'order');
         const targeted = new Set(items.filter(x => x.dm).map(x => x.r.o.id + '|' + x.dm.m.id));
-        const seen = new Map(), groups = new Map(), skipped = [];
+        const seen = new Map(), groups = new Map(), skipped = [], last = new Map();
         for (const x of items) {
-          let { dm } = x;
+          let { dm } = x, forced = false;
+          if (!dm) { // ИИ не отнёс запись к приёму (часто — у клиента нет блюд в меню): следующий свободный приём по порядку текста
+            const list = menus[x.i], free = y => !targeted.has(x.r.o.id + '|' + y.m.id);
+            dm = list.slice((last.get(x.r.o.id) ?? -1) + 1).find(free) || list.find(free);
+            if (dm) { targeted.add(x.r.o.id + '|' + dm.m.id); forced = true; }
+          }
           if (!dm) { skipped.push(`${rows.length > 1 ? x.r.cl.name + ': ' : ''}${x.name} (${x.k.map(v => (v === '' ? '—' : v)).join(' / ')})`); continue; }
           let key = x.r.o.id + '|' + dm.m.id;
-          let how = howOf(x.name, dm);
+          let how = forced ? 'order' : dm.extra ? 'extra' : howOf(x.name, dm);
           // то же блюдо второй раз в тот же приём (ИИ сложил «Куриный сай» дважды в обед) — это следующий свободный приём по порядку
           if ((seen.get(key) || []).includes(low(x.name))) {
             const list = menus[x.i], at = list.indexOf(dm);
@@ -5245,15 +5267,18 @@ ${st.text.trim()}
             if (free) { dm = free; key = x.r.o.id + '|' + dm.m.id; targeted.add(key); how = 'order'; }
           }
           seen.set(key, [...(seen.get(key) || []), low(x.name)]);
-          if (!groups.has(key)) groups.set(key, { r: x.r, meal: dm.m, menu: dm.text.replace(/\s*\n+\s*/g, '; '), dishes: [], parts: [], how: 'meal', on: true });
+          last.set(x.r.o.id, menus[x.i].indexOf(dm));
+          if (!groups.has(key)) groups.set(key, { r: x.r, meal: dm.m, menu: dm.text.replace(/\s*\n+\s*/g, '; '), dishes: [], parts: [], how: dm.extra ? 'extra' : 'meal', extra: dm.extra || '', on: true });
           const g = groups.get(key);
           g.dishes.push(x.name);
           g.parts.push({ k: x.k });
-          if (['meal', 'dish', 'order'].indexOf(how) > ['meal', 'dish', 'order'].indexOf(g.how)) g.how = how; // в группе — самое неуверенное
+          const RANK = ['meal', 'extra', 'dish', 'order'];
+          if (RANK.indexOf(how) > RANK.indexOf(g.how)) g.how = how; // в группе — самое неуверенное
         }
         // порядок — как приёмы в меню клиента
         st.groups = [...groups.values()].map(g => ({ ...g, k: sumOf(g.parts) }))
-          .sort((a, b) => rows.indexOf(a.r) - rows.indexOf(b.r) || menus[rows.indexOf(a.r)].findIndex(x => x.m.id === a.meal.id) - menus[rows.indexOf(b.r)].findIndex(x => x.m.id === b.meal.id));
+          .sort((a, b) => { const at = g => { const k = menus[rows.indexOf(g.r)].findIndex(x => x.m.id === g.meal.id); return k < 0 ? 99 : k; }; // новый доп — в конце
+            return rows.indexOf(a.r) - rows.indexOf(b.r) || at(a) - at(b); });
         st.skipped = skipped;
         st.notes = String(j.notes || '').trim();
         fillModal(m, view());
@@ -5266,6 +5291,7 @@ ${st.text.trim()}
     $('[data-m="apply"]', root)?.addEventListener('click', () => {
       const who = new Map();
       for (const g of st.groups.filter(y => y.on)) {
+        if (g.extra) clientExtraAdd(f, g.r.cl, g.extra); // новый доп у клиента: «Доп. ужин»
         const cd = menuClient(D, f.id, g.r.o.id, true);
         (cd.k = cd.k || {})[g.meal.id] = g.k;
         who.set(g.r.o.id, g.r);
