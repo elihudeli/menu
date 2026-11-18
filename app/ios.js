@@ -91,7 +91,8 @@
   const baseBytes = () => { const s = store.read('base.json'); return s == null ? null : enc.encode(s); };
   async function localDirty() { const b = baseBytes(); return (b ? await sha256(b) : '') !== (local.hash || ''); }
   const iosVer = () => { const m = navigator.userAgent.match(/OS (\d+)_(\d+)/); return m ? ` · iOS ${m[1]}.${m[2]}` : ''; };
-  const me = () => ({ machine: local.machine, who: who || '—', pc: (/iPad/.test(navigator.userAgent) ? 'iPad' : 'iPhone') + iosVer() });
+  const dev = () => (/iPad/.test(navigator.userAgent) ? 'iPad' : /iPhone|iPod/.test(navigator.userAgent) ? 'iPhone' : /Macintosh/.test(navigator.userAgent) ? (navigator.maxTouchPoints > 1 ? 'iPad' : 'MacBook') : 'Сайт');
+  const me = () => ({ machine: local.machine, who: who || '—', pc: dev() + iosVer() });
 
   async function req(method, path, body, accept) {
     let r;
