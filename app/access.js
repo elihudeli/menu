@@ -81,7 +81,7 @@ const ACT_PERM = {
   aiEditKey: 'admin.settings', aiSaveKey: 'admin.settings', aiPick: 'admin.settings', openMenuFiles: 'admin.settings',
   menuEdit: 'menu', menuGt: 'menu', gtFmt: 'menu', gtSel: 'menu', gtFill: 'menu', aiAllergy: 'menu', cfOk: 'menu', cfRemember: 'menu', menuFillAll: 'menu', aiCalc: 'menu', menuCopyPrev: 'menu', menuPdf: 'menu',
   menuFmtNew: 'menu', menuFmtDel: 'menu', menuMealAdd: 'menu', menuMealDel: 'menu', menuMealMove: 'menu',
-  mcMeal: 'menu', mcExtraAdd: 'menu', mcExtraDel: 'menu', mcCalc: 'menu',
+  mcMeal: 'menu', mcExtraAdd: 'menu', mcExtraDel: 'menu', mcCalc: 'menu', mcRec: 'menu', mcGrams: 'menu',
   aiAllergens: 'packing', alRevert: 'clients.edit',
   holCalNew: 'admin.lists', holCalDel: 'admin.lists', holDayAdd: 'admin.lists', holDayDel: 'admin.lists', holDayEdit: 'admin.lists',
   courierSubs: 'couriers', subDel: 'couriers', dselSubs: 'couriers', addrNew: 'clients.address', addrEdit: 'clients.address', addrDel: 'clients.address', addrApply: 'clients.address',
@@ -94,11 +94,11 @@ const ACT_PERM = {
 // эти действия ничего не меняют в базе — их можно делать, даже когда программа у другого
 const NONMUT = new Set(['dselAll', 'dselClear', 'dcToggle', 'dcAll', 'devicesLoad', 'devBlock', 'devPerms', 'setLang', 'setTheme', 'setZoom', 'theme', 'cloudBackupsLoad', 'cloudBackupNow', 'installerDialog', 'copyCourier', 'courierBase', 'exportDelivery', 'labels', 'exportPacking', 'exportBoth', 'pdgPng', 'printPage', 'printPacking', 'menuPrint',
   'menuPrintAll', 'menuPdf', 'exportClients', 'clientsTemplate', 'exportJson', 'exportXlsx', 'openFolder', 'backupNow', 'makeInstaller', 'aiEditKey',
-  'openMenuFiles', 'cloudSave', 'cloudSwitch', 'cloudOff', 'aiPick', 'gtFmt', 'gtSel', 'cloudPublish']);
+  'openMenuFiles', 'cloudSave', 'cloudSwitch', 'cloudOff', 'aiPick', 'gtFmt', 'gtSel', 'mcRec', 'cloudPublish']);
 const BIND_PERM = {
   tagIn: 'clients.edit', ctagIn: 'couriers', progKitchen: 'admin.lists',
   holDefault: 'admin.lists', holName: 'admin.lists', holAll: 'admin.lists',
-  pack: 'packing', newLbl: 'packing', fmtAi: 'menu', mtarget: 'menu', mdish: 'menu', gMode: 'menu', mrec: 'menu', mcrec: 'menu', mkbju: 'menu', mck: 'menu', mclient: 'menu', mcExtra: 'menu', mfmt: 'menu', mmeal: 'menu', gtxt: 'menu', mgx: 'menu', mcgx: 'menu',
+  pack: 'packing', newLbl: 'packing', fmtAi: 'menu', mtarget: 'menu', mdish: 'menu', gMode: 'menu', mrec: 'menu', mcrec: 'menu', mkbju: 'menu', mck: 'menu', mclient: 'menu', mcExtra: 'menu', mfmt: 'menu', mclim: 'menu', mmeal: 'menu', gtxt: 'menu', mgx: 'menu', mcgx: 'menu',
   comboStage: 'admin.lists', remind: 'admin.lists', ctagColor: 'admin.lists', ctagName: 'admin.lists', tagColor: 'admin.lists', tagName: 'admin.lists',
   pcolor: 'admin.lists', contact: 'admin.lists', backupMinutes: 'admin.settings', quickPrint: 'admin.settings', aiSet: 'admin.settings',
   'set.menuUrl': 'admin.settings', 'set.archiveMonths': 'admin.settings', 'set.currency': 'admin.settings', 'set.adminPin': 'roles', handoffNote: 'files',
