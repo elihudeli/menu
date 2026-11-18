@@ -392,14 +392,22 @@ const ACCESS_ACT = {
   cloudPublish: () => confirmBox('Опубликовать обновление', 'Эта версия программы станет у всех: остальные компьютеры поставят её сами при следующей проверке (раз в полчаса или при запуске).',
     'Опубликовать', async () => {
       const note = ($('#pubNote') || {}).value || '';
-      try {
-        const r = await api('POST', '/api/sync/publish', JSON.stringify({ note }));
+      const go = async force => {
+        const r = await api('POST', '/api/sync/publish', JSON.stringify({ note, force }));
         addLog(`Опубликована версия программы ${r.version}`, 'admin');
         persist();
         toast(`Опубликовано: ${r.files} файлов изменено${r.site ? ' · iOS / Сайт версия тоже обновлена' : ''}`, 'ok', 8000);
         if (r.siteError) toast('iOS / Сайт версию обновить не удалось: ' + r.siteError, 'bad', 15000);
         render();
-      } catch (e) { toast('Не удалось опубликовать: ' + e.message, 'bad', 10000); }
+      };
+      try { await go(false); } catch (e) {
+        const m = String(e.message).match(/^NEWER:(.*)$/s);
+        if (!m) { toast('Не удалось опубликовать: ' + e.message, 'bad', 10000); return; }
+        // в облаке программа, опубликованная с другого компьютера, — её изменений здесь нет
+        confirmBox('В облаке более новая версия', `После вашей последней публикации программу опубликовали с другого компьютера:<br><b>${esc(m[1].trim())}</b><br><br>
+          Её изменений в этой программе нет. Если опубликовать отсюда, они <b>пропадут у всех</b>. Сначала перенесите их сюда (попросите разработчика).`,
+          'Всё равно опубликовать', () => go(true).catch(err => toast('Не удалось опубликовать: ' + err.message, 'bad', 10000)));
+      }
     }),
 };
 const ACCESS_BIND = {
