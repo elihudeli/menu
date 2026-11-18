@@ -333,10 +333,11 @@ const ACCESS_ACT = {
   },
   devUserDel: d => { // сайт-версия: закрыть доступ (база и ключи на устройстве сотрутся) и убрать из списка
     const ids = String(d.ids || '').split(',').filter(Boolean);
-    confirmBox('Удалить пользователя', `<b>${esc(d.label)}</b><br>Доступ закроется, база и ключи на его устройстве сотрутся, и он пропадёт из списка. Вернуть — только новой ссылкой из «Установщика».`,
+    confirmBox('Удалить пользователя', `<b>${esc(d.label)}</b><br>Программа на его устройстве сотрётся и вернётся к экрану «Вставьте ссылку», из списка он пропадёт.
+      Старая ссылка больше не сработает; вернуть его — новой ссылкой из «Установщика».`,
       'Удалить', async () => {
         try {
-          await api('POST', '/api/sync/block', JSON.stringify({ ids, label: d.label, on: true }));
+          await api('POST', '/api/sync/remove', JSON.stringify({ ids, label: d.label }));
           ACCESS_ACT.devRemove({ ids: ids.join(','), label: d.label });
           toast('Пользователь удалён', 'ok');
           await ACCESS_ACT.devicesLoad();
@@ -827,7 +828,7 @@ function viewCloud() {
     : st.mode === 'owner' ? `<div class="preview"><b>Программа у вас</b> — вы меняете общую базу, остальные видят её для просмотра.</div>`
       : st.mode === 'viewer' && !st.holder ? `<div class="preview"><b>Программа свободна.</b> Вы её освободили — нажмите «Взять программу», чтобы снова работать.</div>`
       : st.mode === 'viewer' ? `<div class="warn"><b>Программа у ${esc(holderText(st.holder))}</b>${st.holder && st.holder.ago != null ? ` · сигнал ${ago(st.holder.ago)}` : ''}.
-          Пока он работает, у вас только просмотр. Когда он закроет программу (или его компьютер выключится — примерно через минуту), программа сама перейдёт к вам.</div>`
+          Пока он работает, у вас только просмотр. Когда он закроет программу (или его компьютер выключится — примерно через полторы минуты), программа сама перейдёт к вам.</div>`
         : st.mode === 'offline' ? `<div class="warn"><b>Нет интернета.</b> Можно работать — изменения сохранятся здесь и уйдут в облако, когда появится связь.</div>`
           : st.mode === 'error' ? `<div class="warn"><b>Облако:</b> ${esc(st.message || '')}</div>` : '<div class="preview">Программа свободна — подключаюсь…</div>';
   return `<div class="page-head"><h1>Программа и общая база</h1><div class="sub">смен больше нет — работает тот, у кого программа</div></div>
