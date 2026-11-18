@@ -88,7 +88,7 @@ const ACT_PERM = {
   incApply: 'incident', incUndo: 'incident',
   tagQuick: d => (d.k === 'ctags' ? 'couriers' : 'clients.edit'),
   groupAdd: 'admin.lists', groupRename: 'admin.lists', groupDel: 'admin.lists', groupPerson: 'admin.lists', groupPersonEdit: 'admin.lists', groupPersonDel: 'admin.lists',
-  roleAdd: 'roles', roleDel: 'roles', installerDialog: 'installer', wipeBase: 'roles', devBlock: 'roles', devPin: 'roles', devRemove: 'roles', devRestore: 'roles', devPerms: 'roles', cloudRestore: 'files',
+  roleAdd: 'roles', roleDel: 'roles', installerDialog: 'installer', wipeBase: 'roles', devBlock: 'roles', devPin: 'roles', devRemove: 'roles', devUserDel: 'roles', devRestore: 'roles', devPerms: 'roles', cloudRestore: 'files',
   cloudSave: 'cloud', cloudSwitch: 'cloud', menuSitePublish: 'cloud', cloudOff: 'cloud', cloudPublish: 'publish',
 };
 // эти действия ничего не меняют в базе — их можно делать, даже когда программа у другого
@@ -330,6 +330,18 @@ const ACCESS_ACT = {
     db.settings.devRemovedAt = localIso();
     audit(`Устройство возвращено в список: ${r.label}`, { kind: 'admin', sev: 'warn' });
     commit(`Устройство возвращено в список: ${r.label}`);
+  },
+  devUserDel: d => { // сайт-версия: закрыть доступ (база и ключи на устройстве сотрутся) и убрать из списка
+    const ids = String(d.ids || '').split(',').filter(Boolean);
+    confirmBox('Удалить пользователя', `<b>${esc(d.label)}</b><br>Доступ закроется, база и ключи на его устройстве сотрутся, и он пропадёт из списка. Вернуть — только новой ссылкой из «Установщика».`,
+      'Удалить', async () => {
+        try {
+          await api('POST', '/api/sync/block', JSON.stringify({ ids, label: d.label, on: true }));
+          ACCESS_ACT.devRemove({ ids: ids.join(','), label: d.label });
+          toast('Пользователь удалён', 'ok');
+          await ACCESS_ACT.devicesLoad();
+        } catch (e) { toast('Ошибка: ' + e.message, 'bad', 8000); }
+      });
   },
   devBlock: d => {
     const on = !!d.on, ids = String(d.ids || '').split(',').filter(Boolean);
@@ -581,6 +593,8 @@ function devRemovedCard() {
     ${list.length ? `<div class="table-wrap mt"><table class="t compact"><tbody>${list.map(r => `<tr><td class="name">${esc(r.label || '—')}</td><td class="nowrap">${esc(r.at ? fmtStamp(r.at) : '')}</td>
       <td class="right"><button class="btn btn-sm" data-act="devRestore" data-ids="${esc((r.ids || []).join(','))}">Вернуть</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="muted mt">Удалённых устройств нет</div>'}</div>`;
 }
+// iOS / Сайт версия (по ссылке из установщика); старые записи — по названию устройства
+const isWebDev = d => !!d.web || /^(iPhone|iPad|MacBook|Сайт)/.test(String(d.pc || ''));
 function devicesCard() {
   if (!can('roles')) return '';
   const st = S.sync || {};
@@ -595,7 +609,7 @@ function devicesCard() {
     return `<tr class="${b ? 'dev-blocked' : ''}"><td class="name">${esc(d.who || '—')}${me ? ' <span class="muted small">(это устройство)</span>' : ''}</td>
       <td>${esc(roleDefs()[d.role]?.name || d.role || '')}</td><td>${esc(d.pc || '')}</td><td class="nowrap">${d.seen ? esc(ago(d.seen)) : ''}</td>
       <td class="right nowrap">${me ? pinBtn(d) : b ? `<span class="pill">заблокировано</span> <button class="btn btn-sm" data-act="devBlock" data-on="" data-ids="${esc(devIds(d).join(','))}" data-label="${esc(label)}">Разблокировать</button> <button class="btn btn-sm" data-act="devRemove" data-ids="${esc(devIds(d).join(','))}" data-label="${esc(label)}">Удалить</button>`
-    : `${pinBtn(d)} ${FULL_ROLES.includes(d.role) ? '<span class="muted small">все права</span> ' : `<button class="btn btn-sm" data-act="devPerms" data-id="${esc(d.machine)}">Права${Object.keys((db.settings.devPerms || {})[d.machine] || {}).length ? ' *' : ''}</button> `}<button class="btn btn-sm btn-red" data-act="devBlock" data-on="1" data-ids="${esc(devIds(d).join(','))}" data-label="${esc(label)}">Заблокировать</button>`}</td></tr>`;
+    : `${pinBtn(d)} ${FULL_ROLES.includes(d.role) ? '<span class="muted small">все права</span> ' : `<button class="btn btn-sm" data-act="devPerms" data-id="${esc(d.machine)}">Права${Object.keys((db.settings.devPerms || {})[d.machine] || {}).length ? ' *' : ''}</button> `}<button class="btn btn-sm btn-red" data-act="devBlock" data-on="1" data-ids="${esc(devIds(d).join(','))}" data-label="${esc(label)}">Заблокировать</button>${isWebDev(d) ? ` <button class="btn btn-sm btn-red" data-act="devUserDel" data-ids="${esc(devIds(d).join(','))}" data-label="${esc(label)}">Удалить пользователя</button>` : ''}`}</td></tr>`;
   }).join('');
   const orphan = !D ? '' : (D.blocked || []).filter(b => !devGone(b.ids || []) && !(D.devices || []).some(d => (b.ids || []).some(id => devIds(d).includes(id))))
     .map(b => `<tr class="dev-blocked"><td class="name" colspan="3">${esc(b.label || '')}</td><td class="nowrap">${esc(b.at ? fmtStamp(b.at) : '')}</td>
