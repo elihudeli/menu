@@ -96,7 +96,7 @@ const NONMUT = new Set(['dselAll', 'dselClear', 'dcToggle', 'dcAll', 'devicesLoa
   'menuPrintAll', 'menuPdf', 'exportClients', 'clientsTemplate', 'exportJson', 'exportXlsx', 'openFolder', 'backupNow', 'makeInstaller', 'aiEditKey',
   'openMenuFiles', 'cloudSave', 'cloudSwitch', 'cloudOff', 'aiPick', 'gtFmt', 'gtSel', 'mcRec', 'cloudPublish']);
 const BIND_PERM = {
-  tagIn: 'clients.edit', ctagIn: 'couriers', progKitchen: 'admin.lists',
+  tagIn: 'clients.edit', ctagIn: 'couriers', yandexMaps: 'couriers', progKitchen: 'admin.lists',
   holDefault: 'admin.lists', holName: 'admin.lists', holAll: 'admin.lists',
   pack: 'packing', newLbl: 'packing', fmtAi: 'menu', mtarget: 'menu', mdish: 'menu', gMode: 'menu', mrec: 'menu', mcrec: 'menu', mkbju: 'menu', mck: 'menu', mclient: 'menu', mcExtra: 'menu', mfmt: 'menu', mclim: 'menu', mmeal: 'menu', gtxt: 'menu', mgx: 'menu', mcgx: 'menu',
   comboStage: 'admin.lists', remind: 'admin.lists', ctagColor: 'admin.lists', ctagName: 'admin.lists', tagColor: 'admin.lists', tagName: 'admin.lists',
