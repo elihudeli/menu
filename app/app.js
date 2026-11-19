@@ -126,8 +126,20 @@ const shorten = (s, n) => (String(s).length > n ? String(s).slice(0, n - 1) + '�
 // адрес на экране: ссылки на карты — короткой кнопкой с названием сервиса (сам адрес в базе не меняется)
 const MAP_SITES = [[/yandex\.|(^|\.)ya\.ru$/i, 'Яндекс Карты'], [/2gis\./i, '2ГИС'], [/google\.|goo\.gl$/i, 'Google Maps'], [/apple\.com$/i, 'Apple Карты']];
 const mapName = u => (MAP_SITES.find(([re]) => re.test(String(u).split('/')[2] || '')) || [0, 'Ссылка'])[1];
+// «Доставка» → «Настройки»: ссылки Google открывать в Яндекс Картах (по умолчанию включено)
+const yandexMaps = () => db.settings.yandexMaps !== false;
+const isGoogleMap = u => /google\.|goo\.gl$/i.test(String(u).split('/')[2] || '');
+const isGoogleShort = u => /^https?:\/\/([a-z.]*goo\.gl|share\.google)\//i.test(String(u));
+// Google-ссылка с координатами → Яндекс Карты с меткой в той же точке (!3d…!4d… — сама метка, иначе первая пара «шир,долг»: q=, @, ll=)
+function yandexFromGoogle(u) {
+  let s = String(u);
+  try { s = decodeURIComponent(s); } catch { /* битый % — ищем как есть */ }
+  const m = /!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)/.exec(s) || /(-?\d{1,2}\.\d{3,}),\s*\+?(-?\d{1,3}\.\d{3,})/.exec(s);
+  return m && Math.abs(+m[1]) <= 90 && Math.abs(+m[2]) <= 180 ? `https://yandex.ru/maps/?pt=${+m[2]},${+m[1]}&z=17&l=map` : '';
+}
+const mapHref = u => (yandexMaps() && isGoogleMap(u) && yandexFromGoogle(u)) || u;
 const addrHtml = t => String(t ?? '').split(/(https?:\/\/[^\s<>"']*[^\s<>"'.,;:!?)\]])/).map((p, i) => (i % 2
-  ? `<a class="map-link" href="${esc(p)}" target="_blank" rel="noopener" data-act="openUrl" data-u="${esc(p)}" title="${esc(p)}">${mapName(p)} ↗</a>`
+  ? `<a class="map-link" href="${esc(mapHref(p))}" target="_blank" rel="noopener" data-act="openUrl" data-u="${esc(p)}" title="${esc(p)}">${yandexMaps() && isGoogleMap(p) ? 'Яндекс Карты' : mapName(p)} ↗</a>`
   : esc(p))).join('');
 function countLE(list, D) {
   let lo = 0, hi = list.length;
@@ -2688,7 +2700,14 @@ const rowTags = r => [...(r.o.timeAt ? [{ name: `К ${r.o.timeAt}`, color: '#d62
 const rowChips = r => rowTags(r).map(tagChip).join('');
 const slotLabel = (d, time) => `${d === TODAY ? 'сегодня' : d === TODAY + 1 ? 'завтра' : fmtS(d) + ' ' + WD[wdOf(d)].toLowerCase()} ${time === 'вечер' ? 'вечер' : 'утро'}`;
 
-const dvTabs = () => `<div class="chips no-print" style="margin-bottom:10px">${[['', 'Список'], ['report', 'Отчёт']].map(([v, l]) => `<button class="${(S.dv || '') === v ? 'on' : ''}" data-act="dvTab" data-v="${v}">${l}</button>`).join('')}</div>`;
+const dvTabs = () => `<div class="chips no-print" style="margin-bottom:10px">${[['', 'Список'], ['report', 'Отчёт'], ['settings', 'Настройки']].map(([v, l]) => `<button class="${(S.dv || '') === v ? 'on' : ''}" data-act="dvTab" data-v="${v}">${l}</button>`).join('')}</div>`;
+function viewDeliverySettings() {
+  return `${dvTabs()}<div class="page-head"><h1>Настройки доставки</h1></div>
+  <div class="card" style="max-width:760px"><h2>Ссылки на карты</h2>
+    <div class="field full checks"><label><input type="checkbox" data-bind="yandexMaps" ${yandexMaps() ? 'checked' : ''}> Открывать ссылки Google Maps в Яндекс Картах</label></div>
+    <div class="muted small mt">Ссылка в адресе клиента не меняется — программа открывает ту же точку в Яндекс Картах.
+      Короткие ссылки (maps.app.goo.gl) раскрываются только в программе на компьютере, на телефоне они откроются в Google.</div></div>`;
+}
 function viewDeliveryReport() {
   const per = (a, b) => { const m = new Map(); for (let d = a; d <= b; d++) for (const r of deliveriesOn(d)) { const c = r.o.courier || 'Без курьера'; m.set(c, (m.get(c) || 0) + 1); } return m; };
   const cols = [['Сегодня', per(TODAY, TODAY)], ['Вчера', per(TODAY - 1, TODAY - 1)], ['7 дней', per(TODAY - 6, TODAY)], ['30 дней', per(TODAY - 29, TODAY)], ['Этот месяц', per(monthStartDn(TODAY), TODAY)]];
@@ -2704,6 +2723,7 @@ function viewDeliveryReport() {
 }
 function viewDelivery() {
   if (S.dv === 'report') return viewDeliveryReport();
+  if (S.dv === 'settings') return viewDeliverySettings();
   const D = S.wd;
   const rows = deliveryRows(D);
   const groups = courierGroups(rows);
@@ -2744,6 +2764,7 @@ function viewDelivery() {
     <span style="flex:1"></span>
     <button class="btn" data-act="courierBase" data-k="png">Скриншот курьеров</button>
     <button class="btn" data-act="courierBase" data-k="xlsx">Excel «БазаКурьеров»</button>
+    <button class="btn" data-act="exportDelivery">Скачать Excel</button>
     <button class="btn" data-act="printPage">Печать</button>
   </div>
   ${courierChips(D)}
@@ -7428,9 +7449,13 @@ const ACT = {
   noop: () => {},
   // ссылка из адреса: в программе на компьютере — в обычном браузере (Яндекс/Google/Apple откроют своё), иначе — новой вкладкой
   openUrl: async d => {
-    const u = String(d.u || '');
+    let u = String(d.u || '');
     if (!/^https?:\/\//i.test(u)) return;
     const local = !window.EHAndroid && /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
+    // короткую ссылку Google (maps.app.goo.gl) раскрывает программа на компьютере; без неё — откроется Google, как раньше
+    if (local && yandexMaps() && isGoogleShort(u)) {
+      try { u = yandexFromGoogle((await api('POST', '/api/resolve-url', JSON.stringify({ url: u }))).url) || u; } catch { /* нет сети или старый сервер */ }
+    } else u = mapHref(u);
     try { if (local) { await api('POST', '/api/open-url', JSON.stringify({ url: u })); return; } } catch { /* старый сервер — откроем окном */ }
     window.open(u, '_blank', 'noopener');
   },
@@ -7880,6 +7905,11 @@ const BIND = {
     if (t !== 'change') return;
     db.settings.ai[el.dataset.k] = el.checked;
     commit(`ИИ: ${el.dataset.k === 'autoKbju' ? 'автоподсчёт КБЖУ' : 'автопроверка аллергий'} ${el.checked ? 'включён' : 'выключен'}`, 'admin');
+  },
+  yandexMaps: (_v, el, t) => {
+    if (t !== 'change') return;
+    db.settings.yandexMaps = el.checked;
+    commit(`Ссылки Google Maps ${el.checked ? 'открываются в Яндекс Картах' : 'открываются в Google'}`);
   },
   remind: (v, el, t) => {
     if (t !== 'change') return;
