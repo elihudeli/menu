@@ -126,20 +126,30 @@ const shorten = (s, n) => (String(s).length > n ? String(s).slice(0, n - 1) + '�
 // адрес на экране: ссылки на карты — короткой кнопкой с названием сервиса (сам адрес в базе не меняется)
 const MAP_SITES = [[/yandex\.|(^|\.)ya\.ru$/i, 'Яндекс Карты'], [/2gis\./i, '2ГИС'], [/google\.|goo\.gl$/i, 'Google Maps'], [/apple\.com$/i, 'Apple Карты']];
 const mapName = u => (MAP_SITES.find(([re]) => re.test(String(u).split('/')[2] || '')) || [0, 'Ссылка'])[1];
-// «Доставка» → «Настройки»: ссылки Google открывать в Яндекс Картах (по умолчанию включено)
+// «Доставка» → «Настройки»: ссылки Google, 2ГИС и Apple открывать в Яндекс Картах (по умолчанию включено)
 const yandexMaps = () => db.settings.yandexMaps !== false;
-const isGoogleMap = u => /google\.|goo\.gl$/i.test(String(u).split('/')[2] || '');
-const isGoogleShort = u => /^https?:\/\/([a-z.]*goo\.gl|share\.google)\//i.test(String(u));
-// Google-ссылка с координатами → Яндекс Карты с меткой в той же точке (!3d…!4d… — сама метка, иначе первая пара «шир,долг»: q=, @, ll=)
-function yandexFromGoogle(u) {
+const isLocalApp = () => !window.EHAndroid && /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
+const isOtherMap = u => /google\.|goo\.gl$|2gis\.|apple\.com$|^maps\.apple$/i.test(String(u).split('/')[2] || '');
+const isShortMap = u => /^https?:\/\/([a-z.]*goo\.gl|share\.google|maps\.apple)\//i.test(String(u));
+// ссылка на карту с координатами → Яндекс Карты с меткой в той же точке
+function yandexFromMap(u) {
   let s = String(u);
   try { s = decodeURIComponent(s); } catch { /* битый % — ищем как есть */ }
-  const m = /!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)/.exec(s) || /(-?\d{1,2}\.\d{3,}),\s*\+?(-?\d{1,3}\.\d{3,})/.exec(s);
-  return m && Math.abs(+m[1]) <= 90 && Math.abs(+m[2]) <= 180 ? `https://yandex.ru/maps/?pt=${+m[2]},${+m[1]}&z=17&l=map` : '';
+  let lat, lon;
+  if (/^https?:\/\/[^/]*2gis\./i.test(s)) { // 2ГИС пишет «долгота,широта»; в маршруте берём последнюю точку — куда ехать
+    const all = [...s.matchAll(/(-?\d{1,3}\.\d{3,}),(-?\d{1,2}\.\d{3,})/g)], m = all[all.length - 1];
+    if (m) [lon, lat] = [+m[1], +m[2]];
+  } else { // Google и Apple — «широта,долгота»; у Google !3d…!4d… — сама метка, @ — лишь центр экрана
+    const m = /!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)/.exec(s) || /(-?\d{1,2}\.\d{3,}),\s*\+?(-?\d{1,3}\.\d{3,})/.exec(s);
+    if (m) [lat, lon] = [+m[1], +m[2]];
+  }
+  return lat != null && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? `https://yandex.ru/maps/?pt=${lon},${lat}&z=17&l=map` : '';
 }
-const mapHref = u => (yandexMaps() && isGoogleMap(u) && yandexFromGoogle(u)) || u;
+const mapHref = u => (yandexMaps() && isOtherMap(u) && yandexFromMap(u)) || u;
+// короткие ссылки раскрывает только программа на компьютере — на телефоне они откроются в своём сервисе
+const mapLabel = u => (mapHref(u) !== u || (yandexMaps() && isShortMap(u) && isLocalApp()) ? 'Яндекс Карты' : mapName(u));
 const addrHtml = t => String(t ?? '').split(/(https?:\/\/[^\s<>"']*[^\s<>"'.,;:!?)\]])/).map((p, i) => (i % 2
-  ? `<a class="map-link" href="${esc(mapHref(p))}" target="_blank" rel="noopener" data-act="openUrl" data-u="${esc(p)}" title="${esc(p)}">${yandexMaps() && isGoogleMap(p) ? 'Яндекс Карты' : mapName(p)} ↗</a>`
+  ? `<a class="map-link" href="${esc(mapHref(p))}" target="_blank" rel="noopener" data-act="openUrl" data-u="${esc(p)}" title="${esc(p)}">${mapLabel(p)} ↗</a>`
   : esc(p))).join('');
 function countLE(list, D) {
   let lo = 0, hi = list.length;
@@ -2704,9 +2714,9 @@ const dvTabs = () => `<div class="chips no-print" style="margin-bottom:10px">${[
 function viewDeliverySettings() {
   return `${dvTabs()}<div class="page-head"><h1>Настройки доставки</h1></div>
   <div class="card" style="max-width:760px"><h2>Ссылки на карты</h2>
-    <div class="field full checks"><label><input type="checkbox" data-bind="yandexMaps" ${yandexMaps() ? 'checked' : ''}> Открывать ссылки Google Maps в Яндекс Картах</label></div>
+    <div class="field full checks"><label><input type="checkbox" data-bind="yandexMaps" ${yandexMaps() ? 'checked' : ''}> Открывать ссылки Google Maps, 2ГИС и Apple Карт в Яндекс Картах</label></div>
     <div class="muted small mt">Ссылка в адресе клиента не меняется — программа открывает ту же точку в Яндекс Картах.
-      Короткие ссылки (maps.app.goo.gl) раскрываются только в программе на компьютере, на телефоне они откроются в Google.</div></div>`;
+      Короткие ссылки (maps.app.goo.gl, maps.apple/p) раскрываются только в программе на компьютере, на телефоне они откроются как раньше.</div></div>`;
 }
 function viewDeliveryReport() {
   const per = (a, b) => { const m = new Map(); for (let d = a; d <= b; d++) for (const r of deliveriesOn(d)) { const c = r.o.courier || 'Без курьера'; m.set(c, (m.get(c) || 0) + 1); } return m; };
@@ -7451,10 +7461,10 @@ const ACT = {
   openUrl: async d => {
     let u = String(d.u || '');
     if (!/^https?:\/\//i.test(u)) return;
-    const local = !window.EHAndroid && /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
-    // короткую ссылку Google (maps.app.goo.gl) раскрывает программа на компьютере; без неё — откроется Google, как раньше
-    if (local && yandexMaps() && isGoogleShort(u)) {
-      try { u = yandexFromGoogle((await api('POST', '/api/resolve-url', JSON.stringify({ url: u }))).url) || u; } catch { /* нет сети или старый сервер */ }
+    const local = isLocalApp();
+    // короткую ссылку (maps.app.goo.gl, maps.apple/p) раскрывает программа на компьютере; без неё — откроется как раньше
+    if (local && yandexMaps() && isShortMap(u)) {
+      try { u = yandexFromMap((await api('POST', '/api/resolve-url', JSON.stringify({ url: u }))).url) || u; } catch { /* нет сети или старый сервер */ }
     } else u = mapHref(u);
     try { if (local) { await api('POST', '/api/open-url', JSON.stringify({ url: u })); return; } } catch { /* старый сервер — откроем окном */ }
     window.open(u, '_blank', 'noopener');
@@ -7909,7 +7919,7 @@ const BIND = {
   yandexMaps: (_v, el, t) => {
     if (t !== 'change') return;
     db.settings.yandexMaps = el.checked;
-    commit(`Ссылки Google Maps ${el.checked ? 'открываются в Яндекс Картах' : 'открываются в Google'}`);
+    commit(`Ссылки Google, 2ГИС и Apple ${el.checked ? 'открываются в Яндекс Картах' : 'открываются в своих картах'}`);
   },
   remind: (v, el, t) => {
     if (t !== 'change') return;
