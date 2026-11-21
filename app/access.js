@@ -974,7 +974,7 @@ function viewMine() {
     ${db.lists.couriers.includes(operator()) ? '' : `<div class="row" style="margin-bottom:10px"><span class="muted">Курьер:</span>
       <select class="input" data-bind="mineCour" style="max-width:220px"><option value="">— выберите —</option>${opts(db.lists.couriers, cour)}</select></div>`}
     <div class="chips" style="margin-bottom:8px">${[[0, 'Сегодня'], [1, 'Завтра']].map(([v, l]) => `<button class="${(S.mineDay || 0) === v ? 'on' : ''}" data-act="mineDay" data-v="${v}">${l}</button>`).join('')}</div>
-    <div class="chips" style="margin-bottom:12px">${['утро', 'вечер'].map(x => `<button class="${t === x ? 'on' : ''}" data-act="mineTime" data-v="${x}">${x === 'утро' ? 'Утро 6–9' : 'Вечер 19–22'} · ${all.filter(r => r.o.time === x).length}</button>`).join('')}</div>
+    <div class="chips" style="margin-bottom:12px">${['утро', 'вечер'].map(x => `<button class="${t === x ? 'on' : ''}" data-act="mineTime" data-v="${x}">${x === 'утро' ? 'Утро' : 'Вечер'} · ${all.filter(r => r.o.time === x).length}</button>`).join('')}</div>
     ${cour && list.length ? `<div class="mine-count">Доставлено: <b id="mineCount">${list.filter(r => done.includes(r.pid)).length}</b> из ${list.length}</div>` : ''}
     ${!cour ? '<div class="card empty">Выберите курьера</div>' : cards ? `<div class="mine-list">${cards}</div>` : '<div class="card empty">Доставок нет</div>'}`;
 }
