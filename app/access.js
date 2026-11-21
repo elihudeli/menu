@@ -11,6 +11,7 @@ const PERM_GROUPS = [
     ['clients.edit', 'Клиенты и заказы: создавать, менять, замораживать, останавливать, возврат, удалять'],
     ['clients.address', 'Адрес и телефон клиента'],
     ['couriers', 'Назначать курьеров, теги для курьеров'],
+    ['couriers.list', 'Курьеры: добавлять, переименовывать, удалять'],
     ['couriers.files', 'Скриншоты и Excel для курьеров'],
     ['packing', 'Фасовка: отметки «упаковано», бирки'],
     ['print', 'Печать страниц и меню'],
@@ -23,14 +24,14 @@ const PERM_GROUPS = [
     ['admin.settings', 'Админ: настройки и ИИ'],
   ]],
   ['Управление', [
-    ['roles', 'Роли и доступы'], ['cloud', 'Облако GitHub: подключать, менять хранилище, отключать'], ['installer', 'Установщик программы'], ['publish', 'Публиковать обновления программы'],
+    ['roles', 'Роли и доступы'], ['cloud', 'Облако GitHub: подключать, менять хранилище, отключать'], ['installer', 'Установщик программы'], ['installer.couriers', 'Ссылки iOS / Сайт версии для курьеров'], ['publish', 'Публиковать обновления программы'],
   ]],
 ];
 const ALL_PERMS = PERM_GROUPS.flatMap(([, l]) => l.map(([k]) => k));
 const FULL_ROLES = ['manager', 'developer']; // меняют всё и раздают доступы
 const ROLE_BASE = {
-  om: { name: 'Офис-менеджер', perms: ALL_PERMS.filter(k => !['roles', 'cloud', 'installer', 'publish', 'v.manager'].includes(k)) },
-  courier: { name: 'Старший курьер', perms: ['v.delivery', 'clients.address', 'couriers', 'couriers.files', 'print'] },
+  om: { name: 'Офис-менеджер', perms: ALL_PERMS.filter(k => !['roles', 'cloud', 'installer', 'installer.couriers', 'publish', 'v.manager'].includes(k)) },
+  courier: { name: 'Старший курьер', perms: ['v.delivery', 'clients.address', 'couriers', 'couriers.files', 'print', 'couriers.list', 'installer.couriers'], add2: ['couriers.list', 'installer.couriers'] },
   driver: { name: 'Курьер', perms: ['v.mine'] },
   manager: { name: 'Управляющая', perms: ALL_PERMS, pinKey: 'mgrPin' },
   developer: { name: 'Разработчик', perms: ALL_PERMS, pinKey: 'devPin' },
@@ -38,7 +39,8 @@ const ROLE_BASE = {
 function roleDefs() {
   const saved = (db && db.settings.roles) || {};
   const out = {};
-  for (const [id, b] of Object.entries(ROLE_BASE)) out[id] = { id, ...b, ...(saved[id] && !FULL_ROLES.includes(id) ? { perms: saved[id].perms || b.perms } : {}), builtin: true };
+  // add2 — новые права роли: в уже настроенную роль добавляются, пока её доступы не поменяют вручную (v2)
+  for (const [id, b] of Object.entries(ROLE_BASE)) out[id] = { id, ...b, ...(saved[id] && !FULL_ROLES.includes(id) ? { perms: saved[id].perms ? uniq([...saved[id].perms, ...(saved[id].v2 ? [] : b.add2 || [])]) : b.perms } : {}), builtin: true };
   for (const [id, r] of Object.entries(saved)) if (!ROLE_BASE[id] && r && r.name) out[id] = { id, name: r.name, perms: r.perms || [], pin: r.pin || '' };
   return out;
 }
@@ -68,14 +70,14 @@ const ACT_PERM = {
   saveClient: () => (can('clients.edit') ? 'clients.edit' : 'clients.address'),
   bulkSet: d => (d.k === 'courier' ? 'couriers' : 'clients.edit'),
   bulkTag: 'clients.edit',
-  assignAll: 'couriers', moveCourier: 'couriers', toggleCtag: 'couriers', aiCtags: 'couriers',
+  dselMove: 'couriers', moveCourier: 'couriers', toggleCtag: 'couriers', aiCtags: 'couriers',
   copyCourier: 'couriers.files', courierBase: 'couriers.files', exportDelivery: 'couriers.files',
   labels: 'packing', exportPacking: 'packing', exportBoth: 'packing',
   pdgPng: 'print', printPage: 'print', printPacking: 'print', menuPrint: 'print', menuPrintAll: 'print',
   exportClients: 'files', clientsTemplate: 'files', exportJson: 'files', exportXlsx: 'files', pickFile: 'files', openFolder: 'files',
   backupNow: 'files', restoreBackup: 'files',
   makeInstaller: 'installer',
-  adminAdd: 'admin.lists', adminRename: 'admin.lists', adminRemove: 'admin.lists', tagAdd: 'admin.lists', tagDel: 'admin.lists',
+  adminAdd: d => listPerm(d), adminRename: d => listPerm(d), adminRemove: d => listPerm(d), courierLink: 'installer.couriers', tagAdd: 'admin.lists', tagDel: 'admin.lists',
   ctagAdd: 'admin.lists', ctagDel: 'admin.lists', comboNew: 'admin.lists', comboDel: 'admin.lists', comboRename: 'admin.lists',
   comboMergeAll: 'admin.lists', comboStgAdd: 'admin.lists', comboStgDel: 'admin.lists',
   aiEditKey: 'admin.settings', aiSaveKey: 'admin.settings', aiPick: 'admin.settings', openMenuFiles: 'admin.settings',
@@ -92,11 +94,11 @@ const ACT_PERM = {
   cloudSave: 'cloud', cloudSwitch: 'cloud', menuSitePublish: 'cloud', cloudOff: 'cloud', cloudPublish: 'publish',
 };
 // эти действия ничего не меняют в базе — их можно делать, даже когда программа у другого
-const NONMUT = new Set(['dselAll', 'dselClear', 'dcToggle', 'dcAll', 'devicesLoad', 'devBlock', 'devPerms', 'setLang', 'setTheme', 'setZoom', 'theme', 'cloudBackupsLoad', 'cloudBackupNow', 'installerDialog', 'copyCourier', 'courierBase', 'exportDelivery', 'labels', 'exportPacking', 'exportBoth', 'pdgPng', 'printPage', 'printPacking', 'menuPrint',
+const NONMUT = new Set(['dselAll', 'addrNewsOk', 'dselClear', 'dcToggle', 'dcAll', 'devicesLoad', 'devBlock', 'devPerms', 'setLang', 'setTheme', 'setZoom', 'theme', 'cloudBackupsLoad', 'cloudBackupNow', 'installerDialog', 'courierLink', 'copyCourier', 'courierBase', 'exportDelivery', 'labels', 'exportPacking', 'exportBoth', 'pdgPng', 'printPage', 'printPacking', 'menuPrint',
   'menuPrintAll', 'menuPdf', 'exportClients', 'clientsTemplate', 'exportJson', 'exportXlsx', 'openFolder', 'backupNow', 'makeInstaller', 'aiEditKey',
   'openMenuFiles', 'cloudSave', 'cloudSwitch', 'cloudOff', 'aiPick', 'gtFmt', 'gtSel', 'mcRec', 'cloudPublish']);
 const BIND_PERM = {
-  tagIn: 'clients.edit', ctagIn: 'couriers', yandexMaps: 'couriers', progKitchen: 'admin.lists',
+  tagIn: 'clients.edit', ctagIn: 'couriers', dcour: 'couriers', yandexMaps: 'couriers', progKitchen: 'admin.lists',
   holDefault: 'admin.lists', holName: 'admin.lists', holAll: 'admin.lists',
   pack: 'packing', newLbl: 'packing', fmtAi: 'menu', mtarget: 'menu', mdish: 'menu', gMode: 'menu', mrec: 'menu', mcrec: 'menu', mkbju: 'menu', mck: 'menu', mclient: 'menu', mcExtra: 'menu', mfmt: 'menu', mclim: 'menu', mmeal: 'menu', gtxt: 'menu', mgx: 'menu', mcgx: 'menu',
   comboStage: 'admin.lists', remind: 'admin.lists', ctagColor: 'admin.lists', ctagName: 'admin.lists', tagColor: 'admin.lists', tagName: 'admin.lists',
@@ -104,7 +106,9 @@ const BIND_PERM = {
   'set.menuUrl': 'admin.settings', 'set.archiveMonths': 'admin.settings', 'set.currency': 'admin.settings', 'set.adminPin': 'roles', handoffNote: 'files',
   permSet: 'roles', roleName: 'roles',
 };
-const BIND_NONMUT = new Set(['dsel', 'quickPrint', 'backupMinutes', 'handoffNote', 'mink', 'mtheme', 'plang']);
+const BIND_NONMUT = new Set(['dsel', 'dq', 'quickPrint', 'backupMinutes', 'handoffNote', 'mink', 'mtheme', 'plang']);
+// курьеров может менять и старший курьер (право «Курьеры: добавлять, переименовывать, удалять»)
+function listPerm(d) { return d.k === 'couriers' && !can('admin.lists') ? 'couriers.list' : 'admin.lists'; }
 const permOfAct = (name, d) => { const p = ACT_PERM[name]; return typeof p === 'function' ? p(d || {}) : p; };
 
 let lastGateToast = 0;
@@ -122,7 +126,7 @@ function gate(perm, mutating) {
 // на телефоне нет файлов и установщика — эти кнопки прячем (печать — через окно печати Android)
 const PHONE_OFF = new Set(['menuPdf', 'pdgPng', 'exportXlsx', 'exportJson', 'exportClients',
   'clientsTemplate', 'exportDelivery', 'exportPacking', 'exportBoth', 'courierBase', 'pickFile', 'openFolder', 'backupNow', 'restoreBackup',
-  'makeInstaller', 'installerDialog', 'cloudPublish', 'openMenuFiles']);
+  'makeInstaller', 'installerDialog', 'courierLink', 'cloudPublish', 'openMenuFiles']);
 const isPhone = () => !!window.EHAndroid && !window.EHAndroid.desktop; // ссылка, открытая на MacBook, — вид как на компьютере
 // спрятать кнопки и запереть поля, на которые у роли нет доступа
 function applyPermsUI(root = document) {
@@ -228,6 +232,7 @@ const ACCESS_ACT = {
   cloudRelease: () => confirmBox('Освободить программу', 'Отдать программу: ваши изменения отправятся в облако, и следующий, кто откроет программу, сможет работать. Вы останетесь в режиме просмотра.',
     'Освободить', async () => { S.sync = await api('POST', '/api/sync/release', '{}'); toast('Программа свободна', 'ok'); render(); }),
   installerDialog: () => installerDialog(),
+  courierLink: () => installerDialog(true),
   cloudBackupsLoad: async () => {
     try { S.cloudBk = (await api('POST', '/api/sync/backups', '{}')).backups; } catch (e) { toast('Не удалось получить копии: ' + e.message, 'bad'); }
     render();
@@ -419,7 +424,7 @@ const ACCESS_BIND = {
     db.settings.roles = db.settings.roles || {};
     const cur = new Set(R[id].perms);
     if (el.checked) cur.add(k); else cur.delete(k);
-    db.settings.roles[id] = { ...(db.settings.roles[id] || {}), ...(R[id].builtin ? {} : { name: R[id].name }), perms: [...cur] };
+    db.settings.roles[id] = { ...(db.settings.roles[id] || {}), ...(R[id].builtin ? {} : { name: R[id].name }), perms: [...cur], v2: true };
     const lbl = PERM_GROUPS.flatMap(([, l]) => l).find(x => x[0] === k)[1];
     audit(`Доступ «${lbl}» для роли «${R[id].name}»: ${el.checked ? 'дан' : 'убран'}`, { kind: 'role' });
     commit(`Доступ «${lbl}» — ${R[id].name}: ${el.checked ? 'да' : 'нет'}`, 'admin');
@@ -687,16 +692,33 @@ function renderOwner() {
 }
 
 /* ---------------------------------------------------------------- установщик с параметрами */
-function installerDialog() {
+/* Курьер в установщике и ссылке — по постоянному коду, а не по имени: переименовали Сардора в Улугбека —
+   его ссылка работает дальше, и программа зовёт его уже Улугбеком. В настройке хранится «#код|имя на момент выдачи». */
+function courierCode(name) {
+  const m = db.settings.courierCodes || (db.settings.courierCodes = {});
+  let code = Object.keys(m).find(k => m[k] === name);
+  if (!code) { code = uid('k'); m[code] = name; db.settings.courierCodesAt = localIso(); persist(); }
+  return code;
+}
+function opResolve(v) {
+  const m = /^#(\w+)\|(.*)$/s.exec(v || '');
+  if (!m) return v || '';
+  return ((typeof db !== 'undefined' && db && db.settings.courierCodes) || {})[m[1]] || m[2];
+}
+// courierOnly — старший курьер: только ссылка iOS / Сайт версии и только для роли «Курьер»
+function installerDialog(courierOnly = false) {
   const R = roleDefs();
+  const roles = Object.values(R).filter(r => !courierOnly || r.id === 'driver');
   openModal({
-    title: 'Скачать установщик',
+    title: courierOnly ? 'Ссылка для курьера (iOS / Сайт версия)' : 'Скачать установщик',
     body: `<div class="form">
-      <label class="field"><span>Для чего</span><select class="input" name="kind">
-        <option value="exe">Компьютер Windows (.exe)</option><option value="apk">Телефон Android (.apk)</option><option value="ios">iOS / Сайт версия (ссылка)</option></select></label>
+      <label class="field" ${courierOnly ? 'hidden' : ''}><span>Для чего</span><select class="input" name="kind">
+        ${courierOnly ? '<option value="ios">iOS / Сайт версия (ссылка)</option>' : '<option value="exe">Компьютер Windows (.exe)</option><option value="apk">Телефон Android (.apk)</option><option value="ios">iOS / Сайт версия (ссылка)</option>'}</select></label>
       <label class="field"><span>Роль (в установленной программе её не поменять)</span><select class="input" name="role">
-        ${Object.values(R).map(r => `<option value="${esc(r.id)}" ${r.id === 'om' ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label>
-      <label class="field"><span>Имя сотрудника (необязательно)</span><input class="input" name="operator" list="dl-managers" placeholder="например Адема"></label>
+        ${roles.map(r => `<option value="${esc(r.id)}" ${r.id === (courierOnly ? 'driver' : 'om') ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label>
+      <label class="field" id="opBox"><span>Имя сотрудника (необязательно)</span><input class="input" name="operator" list="dl-managers" placeholder="например Адема"></label>
+      <label class="field" id="courBox" hidden><span>Курьер — ссылка привязана к нему, а не к имени: после переименования продолжит работать</span><select class="input" name="cour">
+        <option value="">— выберите —</option>${opts(db.lists.couriers.slice().sort(ruCmp), '')}</select></label>
       <label class="field"><span id="pinLbl">PIN-код для входа (необязательно, 4–8 цифр)</span><input class="input" name="pin" inputmode="numeric" maxlength="8" autocomplete="off"></label>
       <label class="field"><span>Данные</span><select class="input" name="data"><option value="">Пустая программа (база придёт из облака)</option>
         <option value="1">С базой этого компьютера</option></select></label>
@@ -710,21 +732,34 @@ function installerDialog() {
         отправьте ссылку сотруднику, а PIN скажите отдельно — голосом или другим сообщением. Облако подключается всегда.</div>${datalists()}`,
     foot: '<button class="btn" data-act="closeModal">Отмена</button><button class="btn btn-green" data-m="go">Собрать установщик</button>',
     onMount(root) {
-      const kind = $('[name="kind"]', root);
-      kind.addEventListener('change', () => {
+      const kind = $('[name="kind"]', root), roleSel = $('[name="role"]', root);
+      const roleUi = () => { const drv = roleSel.value === 'driver'; $('#opBox', root).hidden = drv; $('#courBox', root).hidden = !drv; };
+      roleSel.addEventListener('change', roleUi);
+      roleUi();
+      const kindUi = () => {
         const ios = kind.value === 'ios';
         $('#apkNote', root).hidden = kind.value !== 'apk';
         $('#iosNote', root).hidden = !ios;
         $('#pinLbl', root).textContent = ios ? 'PIN-код — обязательно, 6–8 цифр' : 'PIN-код для входа (необязательно, 4–8 цифр)';
         $('[name="data"]', root).closest('.field').hidden = ios;
-      });
+        if (courierOnly) $$('.checks label', root).forEach(l => { l.hidden = !l.querySelector('[name="reader"]'); });
+        if (courierOnly) { const rd = $('[name="reader"]', root); rd.checked = true; rd.disabled = true; } // старший курьер выдаёт только читателя
+      };
+      kind.addEventListener('change', kindUi);
+      kindUi();
       $('[data-m="go"]', root).addEventListener('click', async () => {
         const v = n => $(`[name="${n}"]`, root);
         const id = v('role').value, pin = v('pin').value.trim();
         if (kind.value === 'ios' && !/^\d{6,8}$/.test(pin)) { toast('Для iOS / Сайт версии PIN-код обязателен: от 6 до 8 цифр', 'bad'); v('pin').focus(); return; }
         if (pin && !/^\d{4,8}$/.test(pin)) { toast('PIN-код: от 4 до 8 цифр', 'bad'); v('pin').focus(); return; }
-        const opts = { kind: kind.value, role: id, roleName: R[id].name, operator: v('operator').value.trim(), withData: !!v('data').value, withAi: v('ai').checked, withCloud: v('cloud').checked, pin: pin ? await sha(pin) : '', readerOnly: v('reader').checked };
+        const cour = v('cour').value;
+        if (id === 'driver' && !cour) { toast('Выберите курьера', 'bad'); v('cour').focus(); return; }
+        if (courierOnly && (kind.value !== 'ios' || id !== 'driver')) return;
+        if (id === 'driver' && !Object.values(db.settings.courierCodes || {}).includes(cour) && readOnly()) { gateToast(viewerMsg()); return; } // код курьера надо сохранить в базе
+        const operator = id === 'driver' ? `#${courierCode(cour)}|${cour}`.slice(0, 60) : v('operator').value.trim();
+        const opts = { kind: kind.value, role: id, roleName: R[id].name, operator, withData: !!v('data').value, withAi: v('ai').checked, withCloud: v('cloud').checked, pin: pin ? await sha(pin) : '', readerOnly: v('reader').checked };
         closeModal();
+        if (courierOnly) { opts.withData = false; opts.withAi = false; opts.withCloud = true; opts.readerOnly = true; }
         if (kind.value === 'ios') { iosLink(opts, pin); return; }
         ACT.makeInstaller({ opts });
       });
@@ -744,7 +779,7 @@ async function iosLink(opts, pin) {
     }
     const cfg = await api('POST', '/api/ioscfg', JSON.stringify(opts));
     const url = base + 'app/#k=' + await window.EHLink.encryptCfg(cfg, pin);
-    addLog(`Ссылка iOS / Сайт версия: ${opts.roleName}${opts.operator ? ', ' + opts.operator : ''}${opts.readerOnly ? ', только читатель' : ''}`, 'admin');
+    addLog(`Ссылка iOS / Сайт версия: ${opts.roleName}${opts.operator ? ', ' + opResolve(opts.operator) : ''}${opts.readerOnly ? ', только читатель' : ''}`, 'admin');
     openModal({
       title: 'iOS / Сайт версия — ссылка',
       body: `<div class="row" style="gap:14px;align-items:flex-start;flex-wrap:wrap">
