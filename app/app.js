@@ -68,6 +68,7 @@ const fmtStamp = s => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(0, 4)} 
 const isNumProg = p => /^\d+$/.test(String(p || '').trim());
 // точное название программы из справочника по похожему написанию («сиртфуд» → «Sirtfood diet»)
 function canonProgram(p) {
+  if (/^(ам(ер)?\.?\s*)?горки$/i.test(String(p || '').trim()) && db?.settings.combos?.['Американские горки']) return 'Американские горки'; // «ам. горки», «горки»
   if (!p || !db || db.lists.programs.includes(p) || isNumProg(p) || soundKey(p).length < 4) return p;
   const combo = comboOf(p);
   if (combo) return combo.name;
@@ -269,6 +270,9 @@ function normalize(d) {
   const rm = d.settings && d.settings.remind && typeof d.settings.remind === 'object' ? d.settings.remind : {};
   out.settings.remind = { on: rm.on !== false, ahead: Math.max(0, Math.min(14, parseInt(rm.ahead, 10) || 2)),
     repeat: Math.max(0, Math.min(12, parseInt(rm.repeat, 10) || 0)), who: rm.who === 'all' ? 'all' : 'managers' };
+  // «Курьер 1» из старого Excel — заглушка: такие клиенты без курьера и подсвечиваются
+  for (const x of [...out.orders, ...out.clients]) if (/^курьер\s*1$/i.test(String(x.courier || '').trim())) x.courier = '';
+  out.lists.couriers = out.lists.couriers.filter(c => !/^курьер\s*1$/i.test(String(c).trim()));
   for (const o of out.orders) {
     o.dayMode = ['week', 'even', 'odd', 'custom'].includes(o.dayMode) ? o.dayMode : 'week';
     o.customDays = Array.isArray(o.customDays) ? o.customDays.filter(Boolean) : [];
@@ -749,8 +753,10 @@ function dateNav() {
     <button class="btn btn-sm ${W === TODAY + 1 + off ? 'btn-green' : ''}" data-act="dateSet" data-d="${1 + off}">Завтра</button>
   </div>`;
 }
+// как называется статус «нет курьера» (Доставка → Настройки); по умолчанию «Нет курьера»
+const NOCOUR = () => String((typeof db !== 'undefined' && db && db.settings.noCourName) || '').trim() || 'Нет курьера';
 function courierSelect() {
-  return `<select class="input" data-bind="dc"><option value="">Все курьеры</option>${opts([...courierNames(S.dc === 'Без курьера' ? '' : S.dc), 'Без курьера'], S.dc)}</select>`;
+  return `<select class="input" data-bind="dc"><option value="">Все курьеры</option>${opts([...courierNames(S.dc === NOCOUR() ? '' : S.dc), NOCOUR()], S.dc)}</select>`;
 }
 function timeChips() {
   return `<div class="chips">${[['all', 'Все'], ['утро', 'Утро 6–9'], ['вечер', 'Вечер 19–22']]
@@ -1068,7 +1074,7 @@ function clientModalParts(cl) {
         <b>Время</b><span>${esc(o.timeAt || o.time)}</span>
         ${o.company ? `<b>Компания</b><span>${esc(o.company)}</span>` : ''}
         ${o.persons ? `<b>Человек</b><span>${o.persons}</span>` : ''}
-        <b>Постоянный курьер</b><span>${chip('couriers', o.courier)}</span>
+        <b>Постоянный курьер</b><span>${can('couriers.assign') ? `<select class="input" style="max-width:200px;padding:3px 6px" data-bind="dcour" data-id="${esc(o.id)}" title="Меняется во всех текущих и будущих заказах клиента"><option value="">— без курьера —</option>${courOpts(o.courier || '')}</select>` : chip('couriers', o.courier)}</span>
         <b>Временный курьер</b><span>${subsList().filter(r => subLive(r) && (r.oid === o.id || (!r.oid && r.from === (o.courier || '')))).map(r => `<div>${chip('couriers', r.to)} <span class="muted small">${esc(subText(r))}${r.oid ? '' : ' · замена на всех клиентов курьера'}</span></div>`).join('') || '<span class="muted">нет</span>'}
           <button class="btn btn-sm" data-act="courierSubs" data-o="${esc(o.id)}">+ Временный курьер</button></span>
         <b>Ответственный</b><span>${chip('managers', o.manager)}</span>
@@ -1270,16 +1276,18 @@ function planChatEdit(cl, changes) {
 // новый клиент из сообщения: поля заказа как в форме «Новый клиент»
 function chatNewOrder(a) {
   const off = (a.days_off || []).map(x => String(x).toUpperCase().slice(0, 2));
+  const program = canonProgram(normProg(String(a.program || '').trim())), cb = comboOf(program);
   return {
-    program: canonProgram(normProg(String(a.program || '').trim())), time: /веч/i.test(a.time) ? 'вечер' : 'утро', timeAt: '', courier: '',
+    program, time: /веч/i.test(a.time) ? 'вечер' : 'утро', timeAt: '', courier: '',
     persons: 0, company: '', manager: managerOf(a.manager) || managerOf(a.sender) || String(a.manager || '').trim() || operator(),
-    start: isoOk(a.start) ? a.start : '', days: Math.max(0, parseInt(a.days, 10) || 0),
+    // дней не сказали — для программы по шаблону берём дни шаблона (Sirtfood — 21, «горки» — 17; «Админ» → «Программы»)
+    start: isoOk(a.start) ? a.start : '', days: Math.max(0, parseInt(a.days, 10) || (cb ? stagesTotal(cb.stages) : 0)),
     weekdays: WD.map(w => (off.includes(w) ? 0 : 1)), dayMode: 'week', customDays: [],
     allergen: String(a.allergen || '').trim(), note: '', holidays: 'yes', holidayCal: db.settings.holidayCalDefault || 'uz',
   };
 }
 function planChatNew(a, existing) {
-  const x = chatNewOrder(a);
+  const x = chatNewOrder(a), daysTpl = !(parseInt(a.days, 10) > 0) && x.days > 0;
   // клиент уже наш — продление идёт его ответственному, а не тому, кто написал в чат
   if (existing && !managerOf(a.manager)) x.manager = existing.manager || lastOrderOf(existing)?.manager || x.manager;
   const miss = [!String(a.name || '').trim() && 'ФИО', !existing && !String(a.phone || '').trim() && 'телефон', !x.program && 'программа',
@@ -1287,7 +1295,7 @@ function planChatNew(a, existing) {
   const rows = [
     existing ? `Клиент уже есть в базе — <b>${esc(existing.name)}</b> (${esc(STATUS[CINFO.get(existing.id).status].toLowerCase())}): оформлю ему новый заказ` : `Новый клиент: <b>${esc(a.name)}</b>, тел. ${esc(a.phone || '—')}`,
     existing ? '' : `Адрес: ${addrHtml(a.address || '—').replace(/\n/g, '<br>')}`,
-    `Программа <b>${esc(progLabel(x.program) || '—')}</b>, ${x.days || '—'} дн., 1-я готовка <b>${x.start ? fmt(dn(x.start)) : '—'}</b>, ${x.time}, дни: ${x.weekdays.every(Boolean) ? 'все, без выходных' : WD.filter((_, i) => x.weekdays[i]).join(' ')}`,
+    `Программа <b>${esc(progLabel(x.program) || '—')}</b>, ${x.days || '—'} дн.${daysTpl ? ' (по шаблону программы)' : ''}, 1-я готовка <b>${x.start ? fmt(dn(x.start)) : '—'}</b>, ${x.time}, дни: ${x.weekdays.every(Boolean) ? 'все, без выходных' : WD.filter((_, i) => x.weekdays[i]).join(' ')}`,
     `Аллерген / исключения: ${x.allergen ? `<b>${esc(x.allergen)}</b>` : '—'}`,
     `Ответственный: ${esc(x.manager || '—')} · курьер не указан — назначьте в карточке`,
   ].filter(Boolean).map(t => ({ t, cls: '' }));
@@ -1571,7 +1579,7 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
         <button type="button" data-m="time" data-v="утро">утро · 6–9</button><button type="button" data-m="time" data-v="вечер">вечер · 19–22</button>
         <button type="button" data-m="time" data-v="own" hidden>своё время</button></div>
         <input class="input mt" type="time" name="timeAt" value="${esc(v.timeAt)}" style="width:140px" hidden></div>
-      <label class="field"><span>Постоянный курьер</span><input class="input" name="courier" list="dl-couriers" value="${esc(v.courier)}"></label>
+      <label class="field"><span>Постоянный курьер</span><input class="input" name="courier" list="dl-couriers" value="${esc(v.courier)}" ${can('couriers.assign') ? '' : 'disabled title="Нет права назначать курьеров"'}></label>
       <label class="field"><span>Ответственный</span><input class="input" name="manager" list="dl-managers" value="${esc(v.manager || operator())}"></label>
       <label class="field"><span>Дата 1-й доставки *</span><input class="input" type="date" name="start" value="${esc(start)}"></label>
       <div class="field"><span>Кол-во дней доставки *</span><div class="row">
@@ -2670,7 +2678,7 @@ function deleteRecord(coll, id) {
 function deliveryRows(D) {
   let rows = deliveriesOn(D);
   if (S.dt !== 'all') rows = rows.filter(r => r.o.time === S.dt);
-  if (S.dcs.length) rows = rows.filter(r => S.dcs.includes(r.o.courier || 'Без курьера'));
+  if (S.dcs.length) rows = rows.filter(r => S.dcs.includes(r.o.courier || NOCOUR()));
   rows.sort((a, b) => (a.o.time === b.o.time ? ruCmp(a.cl.name, b.cl.name) : a.o.time === 'утро' ? -1 : 1));
   return rows;
 }
@@ -2728,36 +2736,40 @@ function openCourierMove() {
 function noteAddr(cl, from) {
   if (String(from || '').trim() === String(cl.address || '').trim()) return;
   const list = (db.settings.addrNews || []).filter(x => x.at >= isoOf(TODAY - 14));
-  list.push({ id: uid('an'), at: localIso(), who: operator(), cid: cl.id, name: cl.name, from: String(from || ''), to: String(cl.address || '') });
+  list.push({ id: uid('an'), at: localIso(), who: operator(), role: role(), cid: cl.id, name: cl.name, from: String(from || ''), to: String(cl.address || '') });
   db.settings.addrNews = list.slice(-200);
 }
 const addrNewsSeen = () => { try { return JSON.parse(lsGet('eh_addr_seen') || '[]'); } catch { return []; } };
 function addrNewsBox() {
   const seen = new Set(addrNewsSeen());
-  const list = (db.settings.addrNews || []).filter(x => x.at >= isoOf(TODAY - 3) && !seen.has(x.id)).reverse();
+  // адреса, которые поменял сам старший курьер, ему не показываем; решённые («Оставить», «Вернуть прежний») — тоже
+  const list = (db.settings.addrNews || []).filter(x => x.at >= isoOf(TODAY - 3) && !seen.has(x.id) && !x.done && x.role !== 'courier').reverse();
   if (!list.length) return '';
   return `<div class="card addr-news no-print"><h3>Поменяли адрес <span class="count-pill">${list.length}</span><span style="flex:1"></span>
       <button class="btn btn-sm" data-act="addrNewsOk" title="Скрыть на этом устройстве">✓ Понятно, скрыть</button></h3>
     ${list.map(x => `<div class="addr-news-it"><b class="click" data-act="openClient" data-id="${esc(x.cid)}">${esc(x.name)}</b>
       <span class="muted small">${esc(fmtStamp(x.at))}${x.who ? ' · ' + esc(x.who) : ''}</span>
       <div><span class="muted">было:</span> <s>${esc(shorten(String(x.from).replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim() || '—', 120))}</s></div>
-      <div><span class="muted">стало:</span> ${addrHtml(x.to)}</div></div>`).join('')}</div>`;
+      <div><span class="muted">стало:</span> ${addrHtml(x.to)}</div>
+      <div class="row mt" style="gap:6px"><button class="btn btn-sm btn-green" data-act="addrKeep" data-id="${esc(x.id)}" title="Новый адрес верный — убрать из списка">Оставить</button>
+        <button class="btn btn-sm" data-act="addrRevert" data-id="${esc(x.id)}" title="Вернуть адрес, который был до изменения">Вернуть прежний</button>
+        <button class="btn btn-sm" data-act="addrEdit" data-c="${esc(x.cid)}">Изменить</button></div></div>`).join('')}</div>`;
 }
 // быстрый фильтр «Доставки»: кнопка на каждого курьера этого дня (с числом клиентов), можно выбрать нескольких
 function courierChips(D) {
   let rows = deliveriesOn(D);
   if (S.dt !== 'all') rows = rows.filter(r => r.o.time === S.dt);
   const n = new Map();
-  for (const r of rows) { const c = r.o.courier || 'Без курьера'; n.set(c, (n.get(c) || 0) + 1); }
-  const names = [...n.keys()].filter(c => c !== 'Без курьера').sort(ruCmp).concat(n.has('Без курьера') ? ['Без курьера'] : []);
+  for (const r of rows) { const c = r.o.courier || NOCOUR(); n.set(c, (n.get(c) || 0) + 1); }
+  const names = [...n.keys()].filter(c => c !== NOCOUR()).sort(ruCmp).concat(n.has(NOCOUR()) ? [NOCOUR()] : []);
   S.dcs = S.dcs.filter(c => n.has(c)); // на другой день выбранного курьера может не быть
   return `<div class="dc-chips no-print"><button class="${S.dcs.length ? '' : 'on'}" data-act="dcAll">Все · ${rows.length}</button>
     ${names.map(c => `<button class="${S.dcs.includes(c) ? 'on' : ''}" data-act="dcToggle" data-c="${esc(c)}" title="${S.dcs.includes(c) ? 'Убрать из фильтра' : 'Показать только этого курьера (можно выбрать нескольких)'}">
-      <i style="background:${c === 'Без курьера' ? '#d64541' : personColor('couriers', c)}"></i>${esc(c)} · ${n.get(c)}</button>`).join('')}</div>`;
+      <i style="background:${c === NOCOUR() ? '#d64541' : personColor('couriers', c)}"></i>${esc(c)} · ${n.get(c)}</button>`).join('')}</div>`;
 }
 function courierGroups(rows) {
-  const g = groupBy(rows, r => r.o.courier || 'Без курьера');
-  const names = [...g.keys()].sort((a, b) => (a === 'Без курьера' ? 1 : b === 'Без курьера' ? -1 : ruCmp(a, b)));
+  const g = groupBy(rows, r => r.o.courier || NOCOUR());
+  const names = [...g.keys()].sort((a, b) => (a === NOCOUR() ? 1 : b === NOCOUR() ? -1 : ruCmp(a, b)));
   return names.map(n => [n, g.get(n)]);
 }
 
@@ -2785,17 +2797,20 @@ function viewDeliverySettings() {
   ${can('installer.couriers') && !isPhone() ? `<div class="card" style="max-width:760px"><h2>Ссылка для курьера</h2>
     <div class="muted small" style="margin-bottom:8px">iOS / Сайт версия «Мои доставки» для курьера. Ссылка привязана к курьеру, а не к имени — после переименования продолжит работать.</div>
     <button class="btn btn-green" data-act="courierLink">Сделать ссылку для курьера</button></div>` : ''}
+  <div class="card" style="max-width:760px"><h2>Клиенты без курьера</h2>
+    <label class="field"><span>Как называть этот статус в «Доставке», Excel и скриншотах</span>
+      <input class="input" data-bind="noCourName" value="${esc(db.settings.noCourName || '')}" placeholder="Нет курьера" style="max-width:300px"></label></div>
   ${can('couriers.list') || can('admin.lists') ? `<div style="max-width:760px">${adminListCard('couriers')}</div>` : ''}`;
 }
 function viewDeliveryReport() {
-  const per = (a, b) => { const m = new Map(); for (let d = a; d <= b; d++) for (const r of deliveriesOn(d)) { const c = r.o.courier || 'Без курьера'; m.set(c, (m.get(c) || 0) + 1); } return m; };
+  const per = (a, b) => { const m = new Map(); for (let d = a; d <= b; d++) for (const r of deliveriesOn(d)) { const c = r.o.courier || NOCOUR(); m.set(c, (m.get(c) || 0) + 1); } return m; };
   const cols = [['Сегодня', per(TODAY, TODAY)], ['Вчера', per(TODAY - 1, TODAY - 1)], ['7 дней', per(TODAY - 6, TODAY)], ['30 дней', per(TODAY - 29, TODAY)], ['Этот месяц', per(monthStartDn(TODAY), TODAY)]];
-  const names = [...new Set(cols.flatMap(([, m]) => [...m.keys()]))].sort((a, b) => (a === 'Без курьера' ? 1 : b === 'Без курьера' ? -1 : ruCmp(a, b)));
+  const names = [...new Set(cols.flatMap(([, m]) => [...m.keys()]))].sort((a, b) => (a === NOCOUR() ? 1 : b === NOCOUR() ? -1 : ruCmp(a, b)));
   const tot = m => [...m.values()].reduce((a, b) => a + b, 0);
   const log = db.log.filter(l => logType(l) === 'deliv').slice().reverse().slice(0, 300);
   return `${dvTabs()}<div class="page-head"><h1>Отчёт по доставкам</h1><div class="sub">сколько доставок на каждого курьера (по расписанию клиентов, с учётом замен)</div></div>
   <div class="card"><table class="t compact"><thead><tr><th>Курьер</th>${cols.map(([l]) => `<th class="right">${l}</th>`).join('')}</tr></thead><tbody>
-    ${names.map(n => `<tr><td>${chip('couriers', n === 'Без курьера' ? '' : n, 'Без курьера')}</td>${cols.map(([, m]) => `<td class="right">${m.get(n) || 0}</td>`).join('')}</tr>`).join('') || '<tr><td colspan="6" class="empty">Нет данных</td></tr>'}
+    ${names.map(n => `<tr><td>${chip('couriers', n === NOCOUR() ? '' : n, NOCOUR())}</td>${cols.map(([, m]) => `<td class="right">${m.get(n) || 0}</td>`).join('')}</tr>`).join('') || '<tr><td colspan="6" class="empty">Нет данных</td></tr>'}
     <tr><td><b>Всего</b></td>${cols.map(([, m]) => `<td class="right"><b>${tot(m)}</b></td>`).join('')}</tr></tbody></table></div>
   <div class="card"><h2>Журнал доставок</h2><div class="muted small" style="margin-bottom:8px">кому передали клиента, кому заменили на день, адреса и теги</div>
     <div class="timeline">${logTimeline(log)}</div></div>`;
@@ -2808,12 +2823,12 @@ function viewDelivery() {
   const groups = courierGroups(rows);
   const morning = rows.filter(r => r.o.time === 'утро'), evening = rows.filter(r => r.o.time === 'вечер');
   const noCourier = rows.filter(r => !r.o.courier).length;
-  const sel = can('couriers');
+  const sel = can('couriers.assign');
   const q = nameKey(S.dq);
   const hit = r => !q || q.split(' ').every(w => dqKey(r).includes(w));
   // курьер в строке: постоянный меняется тут же (навсегда), временный — пометкой
   const courCell = r => `<td class="nowrap dl-cour" data-act="noop">${sel ? `<select class="input no-print" style="padding:3px 6px;max-width:150px" data-bind="dcour" data-id="${esc(r.o.id)}" title="Постоянный курьер — меняется навсегда"><option value="">— курьер —</option>${courOpts(mainCour(r))}</select>
-      <span class="print-only">${esc(mainCour(r) || '—')}</span>` : chip('couriers', mainCour(r), 'Без курьера')}${r.subFrom !== undefined ? `<div class="small">временно: ${chip('couriers', r.o.courier, 'без курьера')}</div>` : ''}</td>`;
+      <span class="print-only">${esc(mainCour(r) || '—')}</span>` : chip('couriers', mainCour(r), NOCOUR())}${r.subFrom !== undefined ? `<div class="small">временно: ${chip('couriers', r.o.courier, 'без курьера')}</div>` : ''}</td>`;
   const part = (list, t) => list.length ? `<tr class="group"><td colspan="${sel ? 10 : 9}">${t === 'вечер' ? 'ВЕЧЕР · 19–22' : 'УТРО · 6–9'} — ${list.length}</td></tr>`
     + list.map((r, i) => `<tr class="click ${S.dsel.has(r.o.id) ? 'dsel-on' : ''}" data-act="openClient" data-id="${esc(r.cl.id)}" data-q="${esc(dqKey(r))}" ${hit(r) ? '' : 'hidden'}>
         ${sel ? `<td class="cb no-print" data-act="noop"><input type="checkbox" data-bind="dsel" data-id="${esc(r.o.id)}" ${S.dsel.has(r.o.id) ? 'checked' : ''} title="Выбрать — передать другому курьеру на время или навсегда"></td>` : ''}
@@ -2824,8 +2839,8 @@ function viewDelivery() {
         <td>${esc(progLabel(r.prog))}${stageNote(r)}</td>${courCell(r)}<td class="nowrap">${r.no}/${r.total}${dayTags(r)}</td><td class="nowrap">${chip('managers', r.o.manager, '—')}</td></tr>`).join('') : '';
   const blocks = groups.map(([name, list]) => {
     const m = list.filter(r => r.o.time === 'утро'), e = list.filter(r => r.o.time === 'вечер');
-    return `<section class="group-card dl-card ${name === 'Без курьера' ? 'nocour' : ''}" ${list.some(hit) ? '' : 'hidden'}>
-      <header><h3>${chip('couriers', name === 'Без курьера' ? '' : name, 'Без курьера')}</h3><span class="count-pill">${list.length}</span>
+    return `<section class="group-card dl-card ${name === NOCOUR() ? 'nocour' : ''}" ${list.some(hit) ? '' : 'hidden'}>
+      <header><h3>${chip('couriers', name === NOCOUR() ? '' : name, NOCOUR())}</h3><span class="count-pill">${list.length}</span>
         <span class="muted small">утро ${m.length} · вечер ${e.length}</span><span style="flex:1"></span>
         <button class="btn btn-sm no-print" data-act="copyCourier" data-c="${esc(name)}">Текст для Telegram</button></header>
       <table class="t compact dl-t"><thead><tr>${sel ? `<th class="no-print"><input type="checkbox" data-act="dselAll" data-c="${esc(name)}" ${list.every(r => S.dsel.has(r.o.id)) ? 'checked' : ''} title="Выбрать всех клиентов этого курьера"></th>` : ''}<th>№</th><th>ФИО</th><th>Телефон</th><th>Адрес</th><th>Программа</th><th>Курьер</th><th>День</th><th>Ответственный</th></tr></thead>
@@ -2834,7 +2849,7 @@ function viewDelivery() {
   const sumCol = (list, title) => {
     const g = courierGroups(list);
     return `<div class="card dl-sum"><h3>${title} <span class="count-pill">${list.length}</span></h3>
-      ${g.map(([n, l]) => `<div class="dl-sum-row">${chip('couriers', n === 'Без курьера' ? '' : n, 'Без курьера')}<b>${l.length}</b></div>`).join('') || '<div class="muted small">нет доставок</div>'}</div>`;
+      ${g.map(([n, l]) => `<div class="dl-sum-row">${chip('couriers', n === NOCOUR() ? '' : n, NOCOUR())}<b>${l.length}</b></div>`).join('') || '<div class="muted small">нет доставок</div>'}</div>`;
   };
   return `${dvTabs()}<div class="dl-tools">
   <div class="page-head">
@@ -2853,7 +2868,7 @@ function viewDelivery() {
   ${courierChips(D)}
   <div id="dselBar">${dselBar()}</div></div>
   ${addrNewsBox()}
-  ${noCourier ? `<div class="warn no-print" style="margin-bottom:12px">Без курьера: <b>${noCourier}</b> — выберите курьера в строке клиента или отметьте клиентов галочками → «Передать навсегда».</div>` : ''}
+  ${noCourier ? `<div class="warn no-print" style="margin-bottom:12px">${esc(NOCOUR())}: <b>${noCourier}</b> — выберите курьера в строке клиента или отметьте клиентов галочками → «Передать навсегда».</div>` : ''}
   <div class="grid2 no-print" style="margin-bottom:6px">${sumCol(morning, 'Утро · 6–9')}${sumCol(evening, 'Вечер · 19–22')}</div>
   ${blocks || '<div class="card empty">На эту дату доставок нет</div>'}`;
 }
@@ -2968,7 +2983,7 @@ async function courierPngOne(d, t, groups) {
   g.scale(sc, sc);
   g.fillStyle = '#fff'; g.fillRect(0, 0, W, H);
   const text = (s2, x, y, font, color) => { g.font = font; g.fillStyle = color; g.fillText(String(s2 ?? ''), x, y); };
-  const c = cname === 'Без курьера' ? '#d64541' : personColor('couriers', cname);
+  const c = cname === NOCOUR() ? '#d64541' : personColor('couriers', cname);
   text(courierBaseName(d, t), 20, 34, `700 22px ${F}`, '#1d1d1b');
   text(cname, 20, 66, `700 20px ${F}`, c);
   text(`${fmtLong(d)} · ${t === 'вечер' ? 'вечер 19–22' : 'утро 6–9'} · пакетов: ${all.length}`, 20, 92, `400 13px ${F}`, '#6f6f6a');
@@ -3016,7 +3031,7 @@ async function courierPng(d, t) {
     wide: true, title: `Скриншоты курьеров · ${t} ${fmtS(d)} — ${shots.length} шт.`,
     body: `<div class="muted small" style="margin-bottom:10px">Каждому курьеру — свой скриншот. «Копировать» → в Telegram Ctrl+V. Все файлы уже сохранены в папке.</div>
       <div class="cshots">${shots.map((x, i) => `<div class="cshot"><img src="${x.url}" alt="">
-        <div class="row" style="justify-content:space-between"><b style="color:${x.name === 'Без курьера' ? '#d64541' : personColor('couriers', x.name)}">${esc(x.name)}</b>
+        <div class="row" style="justify-content:space-between"><b style="color:${x.name === NOCOUR() ? '#d64541' : personColor('couriers', x.name)}">${esc(x.name)}</b>
         <span class="muted small">${x.n} пак.</span><button class="btn btn-sm btn-green" data-m="copy" data-i="${i}">Копировать</button></div></div>`).join('')}</div>`,
     foot: '<button class="btn" data-m="folder">Открыть папку</button><button class="btn btn-green" data-act="closeModal">Готово</button>',
     onMount(root) {
@@ -3256,7 +3271,7 @@ const mgrCell = m => (!m ? '<span class="muted">—</span>' : db.lists.managers.
 function viewPacking() {
   const D = S.pd;
   const groups = packingGroups(D, S.dt)
-    .map(([k, l]) => [k, l.filter(r => !S.dc || (r.o.courier || 'Без курьера') === S.dc)])
+    .map(([k, l]) => [k, l.filter(r => !S.dc || (r.o.courier || NOCOUR()) === S.dc)])
     .filter(([, l]) => l.length);
   const all = groups.flatMap(([, l]) => l);
   const packed = packedSet(D);
@@ -3706,7 +3721,7 @@ function viewStatsAll() {
     if (i.curSt === 'frozen') frozen++;
   }
   const todayRows = deliveriesOn(TODAY);
-  for (const r of todayRows) courMap.set(r.o.courier || 'Без курьера', (courMap.get(r.o.courier || 'Без курьера') || 0) + 1);
+  for (const r of todayRows) courMap.set(r.o.courier || NOCOUR(), (courMap.get(r.o.courier || NOCOUR()) || 0) + 1);
   const newMonth = newC.get(monthStartDn(TODAY)) || 0, renMonth = ren.get(monthStartDn(TODAY)) || 0;
   const starts90 = db.orders.filter(o => dn(o.start) >= TODAY - 90 && dn(o.start) <= TODAY);
   const avgDays = starts90.length ? Math.round(starts90.reduce((s, o) => s + o.days, 0) / starts90.length) : 0;
@@ -6766,7 +6781,11 @@ function mergeDb(a, b) {
   const cc = (b.settings.courierCodesAt || '') > (out.settings.courierCodesAt || '');
   out.settings.courierCodes = cc ? { ...(out.settings.courierCodes || {}), ...(b.settings.courierCodes || {}) } : { ...(b.settings.courierCodes || {}), ...(out.settings.courierCodes || {}) };
   if (cc) out.settings.courierCodesAt = b.settings.courierCodesAt;
-  for (const x of b.settings.addrNews || []) { out.settings.addrNews = out.settings.addrNews || []; if (!out.settings.addrNews.some(y => y.id === x.id)) out.settings.addrNews.push(x); }
+  for (const x of b.settings.addrNews || []) {
+    out.settings.addrNews = out.settings.addrNews || [];
+    const y = out.settings.addrNews.find(z => z.id === x.id);
+    if (!y) out.settings.addrNews.push(x); else if (x.done && !y.done) y.done = x.done;
+  }
   if ((b.settings.newLblAt || '') > (out.settings.newLblAt || '')) { out.settings.newLbl = b.settings.newLbl; out.settings.newLblAt = b.settings.newLblAt; }
   if ((b.settings.kitchensAt || '') > (out.settings.kitchensAt || '')) { out.settings.kitchens = b.settings.kitchens; out.settings.kitchensAt = b.settings.kitchensAt; }
   if ((b.settings.currencyAt || '') > (out.settings.currencyAt || '')) { out.settings.currency = b.settings.currency; out.settings.currencyAt = b.settings.currencyAt; }
@@ -6957,7 +6976,7 @@ const ACT = {
       } });
   },
   copyCourier: async d => {
-    const list = deliveryRows(S.wd).filter(r => (r.o.courier || 'Без курьера') === d.c);
+    const list = deliveryRows(S.wd).filter(r => (r.o.courier || NOCOUR()) === d.c);
     try {
       await navigator.clipboard.writeText(courierText(d.c, list, S.wd));
       toast('Список скопирован — вставьте в Telegram', 'ok');
@@ -7225,7 +7244,7 @@ const ACT = {
     commit(`Аллерген возвращён как было: ${CLIENTS.get(o.clientId)?.name || ''}`);
   },
   dselAll: d => {
-    const ids = deliveryRows(S.wd).filter(r => (r.o.courier || 'Без курьера') === d.c).map(r => r.o.id);
+    const ids = deliveryRows(S.wd).filter(r => (r.o.courier || NOCOUR()) === d.c).map(r => r.o.id);
     const all = ids.every(id => S.dsel.has(id));
     for (const id of ids) all ? S.dsel.delete(id) : S.dsel.add(id);
     render();
@@ -7233,6 +7252,24 @@ const ACT = {
   dselClear: () => { S.dsel = new Set(); render(); },
   dselSubs: () => openSubs('', { ids: [...S.dsel], dates: [isoOf(S.wd)] }),
   dselMove: () => openCourierMove(),
+  addrKeep: d => {
+    const x = (db.settings.addrNews || []).find(y => y.id === d.id);
+    if (!x) return;
+    x.done = { at: localIso(), who: operator(), how: 'keep' };
+    commit(`Новый адрес подтверждён: ${x.name}`, 'deliv');
+  },
+  addrRevert: d => {
+    const x = (db.settings.addrNews || []).find(y => y.id === d.id), cl = x && CLIENTS.get(x.cid);
+    if (!cl) return;
+    if (!x.from.trim()) { toast('Прежнего адреса не было', 'bad'); return; }
+    confirmBox('Вернуть прежний адрес', `${esc(cl.name)}: вернуть «${esc(shorten(x.from, 160))}»?`, 'Вернуть', () => {
+      cl.address = x.from;
+      touch(cl);
+      x.done = { at: localIso(), who: operator(), how: 'revert' };
+      commit(`Изменён основной адрес: ${cl.name} — возвращён прежний`, 'deliv');
+      toast('Прежний адрес возвращён', 'ok');
+    }, false);
+  },
   addrNewsOk: () => { lsSet('eh_addr_seen', JSON.stringify((db.settings.addrNews || []).map(x => x.id))); render(); },
   dcToggle: d => { S.dcs = S.dcs.includes(d.c) ? S.dcs.filter(x => x !== d.c) : [...S.dcs, d.c]; render(); },
   dcAll: () => { S.dcs = []; render(); },
@@ -7694,6 +7731,13 @@ const BIND = {
   'cf.sort': (v, _el, t) => { if (t === 'change') { S.cf.sort = v; S.cf.dir = 1; render(); } },
   dc: (v, _el, t) => { if (t === 'change') { S.dc = v; render(); } },
   dq: v => { S.dq = v; dqFilter(); },
+  noCourName: (v, el, t) => {
+    if (t !== 'change') return;
+    v = v.trim().replace(/\s+/g, ' ');
+    if (v && db.lists.couriers.some(c => c.toLowerCase() === v.toLowerCase())) { toast('Так зовут курьера — выберите другое название', 'bad'); el.value = db.settings.noCourName || ''; return; }
+    db.settings.noCourName = v;
+    commit(`Статус клиентов без курьера: «${NOCOUR()}»`);
+  },
   dcour: (v, el, t) => {
     if (t !== 'change') return;
     const o = ORDERS.get(el.dataset.id);
