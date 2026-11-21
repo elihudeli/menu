@@ -10,7 +10,8 @@ const PERM_GROUPS = [
   ['Что можно менять', [
     ['clients.edit', 'Клиенты и заказы: создавать, менять, замораживать, останавливать, возврат, удалять'],
     ['clients.address', 'Адрес и телефон клиента'],
-    ['couriers', 'Назначать курьеров, теги для курьеров'],
+    ['couriers.assign', 'Назначать курьеров: постоянного и временного (замены)'],
+    ['couriers', 'Теги для курьеров'],
     ['couriers.list', 'Курьеры: добавлять, переименовывать, удалять'],
     ['couriers.files', 'Скриншоты и Excel для курьеров'],
     ['packing', 'Фасовка: отметки «упаковано», бирки'],
@@ -30,8 +31,8 @@ const PERM_GROUPS = [
 const ALL_PERMS = PERM_GROUPS.flatMap(([, l]) => l.map(([k]) => k));
 const FULL_ROLES = ['manager', 'developer']; // меняют всё и раздают доступы
 const ROLE_BASE = {
-  om: { name: 'Офис-менеджер', perms: ALL_PERMS.filter(k => !['roles', 'cloud', 'installer', 'installer.couriers', 'publish', 'v.manager'].includes(k)) },
-  courier: { name: 'Старший курьер', perms: ['v.delivery', 'clients.address', 'couriers', 'couriers.files', 'print', 'couriers.list', 'installer.couriers'], add2: ['couriers.list', 'installer.couriers'] },
+  om: { name: 'Офис-менеджер', perms: ALL_PERMS.filter(k => !['roles', 'cloud', 'installer', 'installer.couriers', 'publish', 'v.manager', 'couriers.assign'].includes(k)) },
+  courier: { name: 'Старший курьер', perms: ['v.delivery', 'clients.address', 'couriers', 'couriers.assign', 'couriers.files', 'print', 'couriers.list', 'installer.couriers'], add2: ['couriers.list', 'installer.couriers', 'couriers.assign'] },
   driver: { name: 'Курьер', perms: ['v.mine'] },
   manager: { name: 'Управляющая', perms: ALL_PERMS, pinKey: 'mgrPin' },
   developer: { name: 'Разработчик', perms: ALL_PERMS, pinKey: 'devPin' },
@@ -68,9 +69,9 @@ const ACT_PERM = {
   findReturners: 'clients.edit', freezeOrder: 'clients.edit', shiftsOrder: 'clients.edit', skipOrder: 'clients.edit', stopOrder: 'clients.edit', returnOrder: 'clients.edit', deleteOrder: 'clients.edit',
   deleteClient: 'clients.edit', toggleTag: 'clients.edit', pickDays: 'clients.edit', remindNow: 'clients.edit', allowDel: 'clients.edit', mergeCombo: 'clients.edit',
   saveClient: () => (can('clients.edit') ? 'clients.edit' : 'clients.address'),
-  bulkSet: d => (d.k === 'courier' ? 'couriers' : 'clients.edit'),
+  bulkSet: d => (d.k === 'courier' ? 'couriers.assign' : 'clients.edit'),
   bulkTag: 'clients.edit',
-  dselMove: 'couriers', moveCourier: 'couriers', toggleCtag: 'couriers', aiCtags: 'couriers',
+  dselMove: 'couriers.assign', moveCourier: 'couriers.assign', toggleCtag: 'couriers', aiCtags: 'couriers',
   copyCourier: 'couriers.files', courierBase: 'couriers.files', exportDelivery: 'couriers.files',
   labels: 'packing', exportPacking: 'packing', exportBoth: 'packing',
   pdgPng: 'print', printPage: 'print', printPacking: 'print', menuPrint: 'print', menuPrintAll: 'print',
@@ -86,7 +87,7 @@ const ACT_PERM = {
   mcMeal: 'menu', mcExtraAdd: 'menu', mcExtraDel: 'menu', mcCalc: 'menu', mcRec: 'menu', mcGrams: 'menu',
   aiAllergens: 'packing', alRevert: 'clients.edit',
   holCalNew: 'admin.lists', holCalDel: 'admin.lists', holDayAdd: 'admin.lists', holDayDel: 'admin.lists', holDayEdit: 'admin.lists',
-  courierSubs: 'couriers', subDel: 'couriers', dselSubs: 'couriers', addrNew: 'clients.address', addrEdit: 'clients.address', addrDel: 'clients.address', addrApply: 'clients.address',
+  courierSubs: 'couriers.assign', subDel: 'couriers.assign', dselSubs: 'couriers.assign', addrKeep: 'clients.address', addrRevert: 'clients.address', addrNew: 'clients.address', addrEdit: 'clients.address', addrDel: 'clients.address', addrApply: 'clients.address',
   incApply: 'incident', incUndo: 'incident',
   tagQuick: d => (d.k === 'ctags' ? 'couriers' : 'clients.edit'),
   groupAdd: 'admin.lists', groupRename: 'admin.lists', groupDel: 'admin.lists', groupPerson: 'admin.lists', groupPersonEdit: 'admin.lists', groupPersonDel: 'admin.lists',
@@ -98,7 +99,7 @@ const NONMUT = new Set(['dselAll', 'addrNewsOk', 'dselClear', 'dcToggle', 'dcAll
   'menuPrintAll', 'menuPdf', 'exportClients', 'clientsTemplate', 'exportJson', 'exportXlsx', 'openFolder', 'backupNow', 'makeInstaller', 'aiEditKey',
   'openMenuFiles', 'cloudSave', 'cloudSwitch', 'cloudOff', 'aiPick', 'gtFmt', 'gtSel', 'mcRec', 'cloudPublish']);
 const BIND_PERM = {
-  tagIn: 'clients.edit', ctagIn: 'couriers', dcour: 'couriers', yandexMaps: 'couriers', progKitchen: 'admin.lists',
+  tagIn: 'clients.edit', ctagIn: 'couriers', dcour: 'couriers.assign', noCourName: 'couriers.list', yandexMaps: 'couriers', progKitchen: 'admin.lists',
   holDefault: 'admin.lists', holName: 'admin.lists', holAll: 'admin.lists',
   pack: 'packing', newLbl: 'packing', fmtAi: 'menu', mtarget: 'menu', mdish: 'menu', gMode: 'menu', mrec: 'menu', mcrec: 'menu', mkbju: 'menu', mck: 'menu', mclient: 'menu', mcExtra: 'menu', mfmt: 'menu', mclim: 'menu', mmeal: 'menu', gtxt: 'menu', mgx: 'menu', mcgx: 'menu',
   comboStage: 'admin.lists', remind: 'admin.lists', ctagColor: 'admin.lists', ctagName: 'admin.lists', tagColor: 'admin.lists', tagName: 'admin.lists',
@@ -152,7 +153,7 @@ function startPermsUI() {
 }
 
 /* ---------------------------------------------------------------- читатель: роль без права что-либо менять */
-const EDIT_PERMS = ['clients.edit', 'clients.address', 'couriers', 'packing', 'menu', 'incident', 'finance', 'salary', 'files', 'admin.lists', 'admin.settings', 'roles', 'cloud', 'publish'];
+const EDIT_PERMS = ['clients.edit', 'clients.address', 'couriers', 'couriers.assign', 'couriers.list', 'packing', 'menu', 'incident', 'finance', 'salary', 'files', 'admin.lists', 'admin.settings', 'roles', 'cloud', 'publish'];
 // «Только режим читателя» ставится в установщике и в программе не снимается
 const readerOnly = () => !!(typeof S !== 'undefined' && S.local && S.local.readerOnly);
 const isReader = () => readerOnly() || !EDIT_PERMS.some(p => can(p));
