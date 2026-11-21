@@ -759,7 +759,7 @@ function courierSelect() {
   return `<select class="input" data-bind="dc"><option value="">Все курьеры</option>${opts([...courierNames(S.dc === NOCOUR() ? '' : S.dc), NOCOUR()], S.dc)}</select>`;
 }
 function timeChips() {
-  return `<div class="chips">${[['all', 'Все'], ['утро', 'Утро 6–9'], ['вечер', 'Вечер 19–22']]
+  return `<div class="chips">${[['all', 'Все'], ['утро', 'Утро'], ['вечер', 'Вечер']]
     .map(([v, l]) => `<button class="${S.dt === v ? 'on' : ''}" data-act="setTime" data-v="${v}">${l}</button>`).join('')}</div>`;
 }
 // корпоративное меню: заказ на человека или компанию, в описании — что готовить, время доставки своё
@@ -772,7 +772,7 @@ function corpPrevious() {
   return db.orders.filter(o => isCorp(o.program) && o.allergen.trim()).sort((a, b) => (a.start < b.start ? 1 : -1))
     .filter(o => !seen.has(o.allergen.trim()) && seen.add(o.allergen.trim())).slice(0, 8);
 }
-const TIME_LABEL = { утро: '6–9', вечер: '19–22' }; // утро 6:00–9:00, вечер 19:00–22:00
+const TIME_LABEL = { утро: 'утро', вечер: 'вечер' }; // часы (6–9, 19–22) не пишем — просто утро и вечер
 const timeLabel = t => TIME_LABEL[t] || t || '';
 function dayTags(r) {
   let s = '';
@@ -1576,7 +1576,7 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
     <div class="form">
       <label class="field"><span>Программа *</span><input class="input" name="program" list="dl-programs" value="${esc(v.program)}" placeholder="1200, Sirtfood diet…"></label>
       <div class="field"><span>Время доставки</span><div class="chips" id="timeChips">
-        <button type="button" data-m="time" data-v="утро">утро · 6–9</button><button type="button" data-m="time" data-v="вечер">вечер · 19–22</button>
+        <button type="button" data-m="time" data-v="утро">утро</button><button type="button" data-m="time" data-v="вечер">вечер</button>
         <button type="button" data-m="time" data-v="own" hidden>своё время</button></div>
         <input class="input mt" type="time" name="timeAt" value="${esc(v.timeAt)}" style="width:140px" hidden></div>
       <label class="field"><span>Постоянный курьер</span><input class="input" name="courier" list="dl-couriers" value="${esc(v.courier)}" ${can('couriers.assign') ? '' : 'disabled title="Нет права назначать курьеров"'}></label>
@@ -2829,7 +2829,7 @@ function viewDelivery() {
   // курьер в строке: постоянный меняется тут же (навсегда), временный — пометкой
   const courCell = r => `<td class="nowrap dl-cour" data-act="noop">${sel ? `<select class="input no-print" style="padding:3px 6px;max-width:150px" data-bind="dcour" data-id="${esc(r.o.id)}" title="Постоянный курьер — меняется навсегда"><option value="">— курьер —</option>${courOpts(mainCour(r))}</select>
       <span class="print-only">${esc(mainCour(r) || '—')}</span>` : chip('couriers', mainCour(r), NOCOUR())}${r.subFrom !== undefined ? `<div class="small">временно: ${chip('couriers', r.o.courier, 'без курьера')}</div>` : ''}</td>`;
-  const part = (list, t) => list.length ? `<tr class="group"><td colspan="${sel ? 10 : 9}">${t === 'вечер' ? 'ВЕЧЕР · 19–22' : 'УТРО · 6–9'} — ${list.length}</td></tr>`
+  const part = (list, t) => list.length ? `<tr class="group"><td colspan="${sel ? 10 : 9}">${t === 'вечер' ? 'ВЕЧЕР' : 'УТРО'} — ${list.length}</td></tr>`
     + list.map((r, i) => `<tr class="click ${S.dsel.has(r.o.id) ? 'dsel-on' : ''}" data-act="openClient" data-id="${esc(r.cl.id)}" data-q="${esc(dqKey(r))}" ${hit(r) ? '' : 'hidden'}>
         ${sel ? `<td class="cb no-print" data-act="noop"><input type="checkbox" data-bind="dsel" data-id="${esc(r.o.id)}" ${S.dsel.has(r.o.id) ? 'checked' : ''} title="Выбрать — передать другому курьеру на время или навсегда"></td>` : ''}
         <td>${i + 1}</td><td class="name nowrap">${esc(r.cl.name)}${rowChips(r) ? `<div class="st2">${rowChips(r)}</div>` : ''}</td><td class="ph">${esc(r.cl.phone)}</td>
@@ -2869,7 +2869,7 @@ function viewDelivery() {
   <div id="dselBar">${dselBar()}</div></div>
   ${addrNewsBox()}
   ${noCourier ? `<div class="warn no-print" style="margin-bottom:12px">${esc(NOCOUR())}: <b>${noCourier}</b> — выберите курьера в строке клиента или отметьте клиентов галочками → «Передать навсегда».</div>` : ''}
-  <div class="grid2 no-print" style="margin-bottom:6px">${sumCol(morning, 'Утро · 6–9')}${sumCol(evening, 'Вечер · 19–22')}</div>
+  <div class="grid2 no-print" style="margin-bottom:6px">${sumCol(morning, 'Утро')}${sumCol(evening, 'Вечер')}</div>
   ${blocks || '<div class="card empty">На эту дату доставок нет</div>'}`;
 }
 
@@ -2886,7 +2886,7 @@ function courierBaseChoose(kind) {
     title: kind === 'png' ? 'Скриншот курьеров' : 'Excel «База курьеров»',
     body: `<div class="muted" style="margin-bottom:10px">Какую смену показать коллегам?</div>
       <div class="form"><label class="field full"><span>Смена</span><select class="input" name="s">
-        ${list.map(([d, t], i) => `<option value="${i}">${t === 'вечер' ? 'вечер · 19–22' : 'утро · 6–9'} · ${fmtS(d)} ${WD[wdOf(d)].toLowerCase()}${d === TODAY ? ' (сегодня)' : d === TODAY + 1 ? ' (завтра)' : ''}</option>`).join('')}</select></label></div>`,
+        ${list.map(([d, t], i) => `<option value="${i}">${t === 'вечер' ? 'вечер' : 'утро'} · ${fmtS(d)} ${WD[wdOf(d)].toLowerCase()}${d === TODAY ? ' (сегодня)' : d === TODAY + 1 ? ' (завтра)' : ''}</option>`).join('')}</select></label></div>`,
     foot: `<button class="btn" data-act="closeModal">Отмена</button><button class="btn btn-green" data-m="go">${kind === 'png' ? 'Сделать скриншот' : 'Скачать Excel'}</button>`,
     onMount(root) {
       $('[data-m="go"]', root).addEventListener('click', () => {
@@ -2906,9 +2906,9 @@ function byProg(list) {
   const g = groupBy(list, r => r.prog);
   return [...g.keys()].sort(progCmp).map(k => [progLabel(k), g.get(k).sort((a, b) => ruCmp(a.cl.name, b.cl.name))]);
 }
-const BASE_COLS = ['№', 'Курьер', 'ФИО клиента', 'Телефон', 'Адрес', 'Смена', 'Менеджер', 'Тег для курьера', 'Примечание'];
-const baseShift = r => r.o.timeAt || `${r.o.time} ${timeLabel(r.o.time)}`;
-const baseRow = (r, i) => [i + 1, r.o.courier || '', r.cl.name, r.cl.phone, r.cl.address, baseShift(r), r.o.manager || '', rowTags(r).map(x => x.name).join(', '), r.o.note || ''];
+const BASE_COLS = ['№', 'Курьер', 'ФИО клиента', 'Телефон', 'Адрес', 'Смена', 'Менеджер', 'Тег и примечание'];
+const baseShift = r => r.o.timeAt || r.o.time;
+const baseRow = (r, i) => [i + 1, r.o.courier || '', r.cl.name, r.cl.phone, r.cl.address, baseShift(r), r.o.manager || '', [rowTags(r).map(x => x.name).join(', '), r.o.note].filter(Boolean).join('\n')];
 // телефон как в старой базе: (97) 300-28-78; номер не по шаблону — как записан
 const phoneXl = s => String(s || '').split(/\n|,|;/).map(x => x.trim()).filter(Boolean).map(x => {
   let n = x.replace(/\D/g, '');
@@ -2924,20 +2924,20 @@ async function courierXlsx(d, t) {
   // вид как в старой базе: строка калоража голубая на всю ширину, сетка, курьер и телефон подсвечены
   const N = BASE_COLS.length, last = [[0, N - 1]];
   const line = (text, st) => ({ cells: [text, ...Array(N - 1).fill('')], st: Object.fromEntries(BASE_COLS.map((_, k) => [k, st])), merge: last });
-  const cellSt = { 0: 'num', 1: 'cellb', 2: 'cell', 3: 'cellb', 4: 'cell', 5: 'cell', 6: 'cell', 7: 'cell', 8: 'cell' };
+  const cellSt = { 0: 'num', 1: 'cellb', 2: 'cell', 3: 'cellb', 4: 'cell', 5: 'cell', 6: 'cell', 7: 'cell' };
   const sheet = name => {
     const rows = [{ cells: BASE_COLS, st: Object.fromEntries(BASE_COLS.map((_, k) => [k, 'hdr'])) }];
     for (const [day, t, m] of shifts) {
       const list = m.get(name) || [];
       if (!list.length) continue;
-      rows.push(line(`${name} · ${t === 'вечер' ? 'ВЕЧЕР 19–22' : 'УТРО 6–9'} · ${fmtS(day)} — ${list.length}`, 'shift'));
+      rows.push(line(`${name} · ${t === 'вечер' ? 'ВЕЧЕР' : 'УТРО'} · ${fmtS(day)} — ${list.length}`, 'shift'));
       let i = 0;
       for (const [prog, l] of byProg(list)) {
         rows.push(line(`${String(prog).replace(/\s*ккал$/i, '')} — ${l.length}`, 'pgroup'));
         for (const r of l) { const v = baseRow(r, i++); v[3] = phoneXl(r.cl.phone); v[5] = r.o.timeAt || r.o.time; rows.push({ cells: v, st: cellSt }); }
       }
     }
-    return { name, widths: [5, 12, 26, 17, 60, 8, 12, 22, 26], rows, fit: true };
+    return { name, widths: [5, 12, 26, 17, 60, 8, 12, 40], rows, fit: true };
   };
   try {
     const p = await exportFile('xlsx', fname, { sheets: names.map(sheet) });
@@ -2949,7 +2949,7 @@ async function courierXlsx(d, t) {
 async function courierPngOne(d, t, groups) {
   const [cname, all] = groups[0];
   const F = '"Montserrat", "Segoe UI", Arial, sans-serif';
-  const COLW = [30, 90, 170, 105, 330, 75, 95, 140, 175], PAD = 5, LH = 15;
+  const COLW = [30, 90, 170, 105, 330, 60, 95, 280], PAD = 5, LH = 15;
   const W = COLW.reduce((a, b) => a + b, 0) + 40, sc = 2;
   const mg = document.createElement('canvas').getContext('2d');
   const CF = `400 12px ${F}`;
@@ -2986,7 +2986,7 @@ async function courierPngOne(d, t, groups) {
   const c = cname === NOCOUR() ? '#d64541' : personColor('couriers', cname);
   text(courierBaseName(d, t), 20, 34, `700 22px ${F}`, '#1d1d1b');
   text(cname, 20, 66, `700 20px ${F}`, c);
-  text(`${fmtLong(d)} · ${t === 'вечер' ? 'вечер 19–22' : 'утро 6–9'} · пакетов: ${all.length}`, 20, 92, `400 13px ${F}`, '#6f6f6a');
+  text(`${fmtLong(d)} · ${t === 'вечер' ? 'вечер' : 'утро'} · пакетов: ${all.length}`, 20, 92, `400 13px ${F}`, '#6f6f6a');
   const X = [20];
   COLW.forEach(w => X.push(X[X.length - 1] + w));
   const grid = (y, h) => { g.strokeStyle = '#9a9d98'; g.lineWidth = 1; g.strokeRect(20, y, W - 40, h); for (const x of X.slice(1, -1)) { g.beginPath(); g.moveTo(x, y); g.lineTo(x, y + h); g.stroke(); } };
@@ -3001,7 +3001,7 @@ async function courierPngOne(d, t, groups) {
     text(`${prog} — ${l.length}`, 26, y + 16, `700 13px ${F}`, '#1d1d1b');
     y += GH;
     for (const x of l) {
-      x.cells.forEach((lines, k) => lines.forEach((ln, j) => text(ln, X[k] + PAD, y + 16 + j * LH, k === 2 ? `600 12px ${F}` : CF, k === 7 || k === 8 ? '#c0392b' : '#1d1d1b')));
+      x.cells.forEach((lines, k) => lines.forEach((ln, j) => text(ln, X[k] + PAD, y + 16 + j * LH, k === 2 ? `600 12px ${F}` : CF, k === 7 ? '#c0392b' : '#1d1d1b')));
       grid(y, x.h);
       y += x.h;
     }
@@ -3098,7 +3098,7 @@ ${list}
 function courierText(name, list, D) {
   const lines = [`Доставка ${fmt(D)} (${WD_FULL[wdOf(D)]}) — ${name}, пакетов: ${list.length}`, ''];
   list.forEach((r, i) => {
-    lines.push(`${i + 1}. ${r.cl.name} — ${firstLine(r.cl.phone)} — ${r.o.timeAt || `${r.o.time} ${timeLabel(r.o.time)}`}`);
+    lines.push(`${i + 1}. ${r.cl.name} — ${firstLine(r.cl.phone)} — ${r.o.timeAt || r.o.time}`);
     if (r.cl.address) lines.push('   ' + r.cl.address.replace(/\n+/g, '\n   '));
     if (rowTags(r).length) lines.push('   ' + rowTags(r).map(t => t.name).join(' · '));
     if (r.o.note) lines.push('   ' + r.o.note);
