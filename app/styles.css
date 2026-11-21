@@ -1102,3 +1102,16 @@ body.dark #pinGate { background: #171a20; }
 .upd-more { opacity: .85; margin-top: 2px; }
 .upd-go { margin-top: 12px; width: 100%; border: 0; border-radius: 10px; padding: 10px; background: #fff; color: var(--green); font-weight: 700; font-size: 14px; cursor: pointer; }
 .upd-go:disabled { opacity: .7; cursor: default; }
+/* «Доставка»: линии таблицы пожирнее, галочка выбора и на телефоне, оповещение о смене адреса */
+.t.dl-t th, .t.dl-t td { border-bottom: 2px solid #b9bdb3; border-right: 1.5px solid #c9ccc3; }
+.t.dl-t th:last-child, .t.dl-t td:last-child { border-right: 0; }
+body.dark .t.dl-t th, body.dark .t.dl-t td { border-color: #59606b; }
+@media screen and (max-width: 760px) {
+  body:not(.printdoc) :is(table.t, table.rt).dl-t:has(td.name):has(td:nth-child(5)) td.cb { display: block; order: -2; }
+  body:not(.printdoc) :is(table.t, table.rt).dl-t:has(td.name):has(td:nth-child(5)) td.cb input { width: 22px; height: 22px; }
+  body:not(.printdoc) :is(table.t, table.rt).dl-t:has(td.name):has(td:nth-child(5)) > tbody > tr > td.cb + td + td.name { flex: 1 1 60%; }
+}
+.addr-news { border: 2px solid #e08a00; margin-bottom: 12px; }
+.addr-news h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+.addr-news-it { padding: 6px 0; border-top: 1px solid var(--line); }
+.addr-news-it b.click { cursor: pointer; text-decoration: underline; }
