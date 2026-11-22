@@ -8409,6 +8409,8 @@ async function checkAppUpdate() {
     },
   });
 }
+checkAppUpdate();
+setInterval(checkAppUpdate, 20 * 60e3);
 // зелёное окошко обновления (в углу, не мешает работать): что нового и кнопка
 function updateBox({ title, note = '', lines = [], go, goText = 'Обновить сейчас', later }) {
   $('#updBox')?.remove();
