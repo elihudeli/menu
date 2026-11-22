@@ -600,6 +600,18 @@
     } catch { /* без «Что нового» */ }
   }
 
+  // новая версия сайта: список изменений на сервере уже не тот, с которым открыли страницу; файлы заранее
+  // перекачиваем мимо кэша браузера — иначе после «Обновить» он мог показать старую программу
+  async function checkSiteUpdate() {
+    if (st.updated) return;
+    try {
+      const r = await F('changelog.txt', { cache: 'no-store' });
+      if (!r.ok || (await r.text()) === store.read('changelog.txt')) return;
+      await Promise.all(['index.html', 'app.js', 'access.js', 'finance.js', 'i18n.js', 'qr.js', 'styles.css', 'ios.js'].map(f => F(f, { cache: 'reload' }).catch(() => {})));
+      st.updated = 1;
+    } catch { /* нет сети — проверим в следующий раз */ }
+  }
+
   /* ---------------------------------------------------------------- первый запуск: ссылка + PIN */
   const standalone = () => navigator.standalone || matchMedia('(display-mode: standalone)').matches;
   function screen(html) {
@@ -691,6 +703,7 @@
       inst = loc.inst || ''; role = loc.role || ''; reader = !!loc.readerOnly;
       st.rev = local.rev;
       await loadNews();
+      setInterval(checkSiteUpdate, 10 * 60e3);
       ready();
       start();
       loop();
