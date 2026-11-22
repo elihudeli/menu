@@ -719,6 +719,12 @@ function closeModal() {
   const m = MODALS.pop();
   if (m) { m.back.remove(); if (m.onClose) m.onClose(); }
 }
+// закрыть окно крестиком или Esc: окно может спросить «сохранить?» (beforeClose вернул false — не закрываем)
+function userCloseModal() {
+  const m = MODALS[MODALS.length - 1];
+  if (m && m.beforeClose && m.beforeClose(m) === false) return;
+  closeModal();
+}
 function refreshModals() {
   for (const m of MODALS.slice()) if (m.refresh) m.refresh(m);
 }
@@ -1035,10 +1041,32 @@ function updateClientsTable() {
 }
 
 /* ---------------------------------------------------------------- карточка клиента */
+// поля контактов в карточке клиента: что в них сейчас и что отличается от базы
+function contactValues(root, cl) {
+  const v = n => (root.querySelector(`[name="${n}"]`)?.value || '').trim();
+  const nv = { name: v('c_name').replace(/\s+/g, ' '), phone: v('c_phone'), address: v('c_address'), comment: v('c_comment') };
+  if (!can('clients.edit')) { nv.name = cl.name; nv.comment = cl.comment || ''; } // только адрес и телефон
+  return nv;
+}
+const contactDiff = (root, cl) => { const nv = contactValues(root, cl); return Object.keys(nv).filter(k => String(cl[k] || '') !== nv[k]); };
 function openClientModal(id) {
   const cl = CLIENTS.get(id);
   if (!cl) return;
-  openModal({ wide: true, clientId: id, ...clientModalParts(cl), refresh: m => {
+  openModal({ wide: true, clientId: id, ...clientModalParts(cl), beforeClose: m => {
+    const c = CLIENTS.get(m.clientId), save = $('[data-act="saveClient"]', m.back);
+    if (!c || !save || !contactDiff($('.modal', m.back), c).length) return true;
+    openModal({ title: 'Контакты не сохранены', body: '<p>Вы точно не хотите сохранить изменения?</p>',
+      foot: '<button class="btn" data-m="no">Нет</button><button class="btn btn-green" data-m="yes">Сохранить</button>',
+      onMount(root) {
+        $('[data-m="no"]', root).addEventListener('click', () => { closeModal(); closeModal(); });
+        $('[data-m="yes"]', root).addEventListener('click', () => {
+          closeModal();
+          ACT.saveClient({ id: m.clientId }, save);
+          if (MODALS.includes(m) && !contactDiff($('.modal', m.back), CLIENTS.get(m.clientId)).length) { MODALS.splice(MODALS.indexOf(m), 1); m.back.remove(); }
+        });
+      } });
+    return false;
+  }, refresh: m => {
     const c = CLIENTS.get(m.clientId);
     if (!c) { MODALS.splice(MODALS.indexOf(m), 1); m.back.remove(); return; }
     fillModal(m, clientModalParts(c));
@@ -1130,18 +1158,20 @@ function clientModalParts(cl) {
           <label class="field full"><span>ФИО</span><input class="input" name="c_name" value="${esc(cl.name)}" data-perm="clients.edit"></label>
           <label class="field full"><span>Телефон(ы)</span><input class="input" name="c_phone" value="${esc(cl.phone)}"></label>
           <label class="field full"><span>Адрес и как найти</span><textarea class="input" name="c_address" rows="4">${esc(cl.address)}</textarea></label>
+          <label class="field full"><span>Комментарий о клиенте</span><textarea class="input" name="c_comment" rows="2" data-perm="clients.edit">${esc(cl.comment)}</textarea></label>
+        </div>
+        <div class="actions" style="margin:12px 0 16px"><button class="btn btn-green" data-act="saveClient" data-id="${esc(cl.id)}">${can('clients.edit') ? 'Сохранить контакты' : 'Сохранить адрес и телефон'}</button>
+        <span class="muted small" style="align-self:center">В базе с ${fmt(dn((cl.createdAt || '').slice(0, 10)))}</span></div>
+        <div class="form">
           <div class="field full"><span>Адреса на период и по графику</span><div>
             ${(cl.addrs || []).filter(x => x.kind !== 'temp' || (x.end || x.start) >= isoOf(TODAY)).map(x => `<div class="addr-it"><b>${esc(addrWhen(x))}</b>
               ${addrHtml(shorten(String(x.address).replace(/https?:\/\/\S+/g, u => ' ' + u + ' ').replace(/\s+/g, ' '), 400))} <a data-act="addrDel" data-c="${esc(cl.id)}" data-a="${esc(x.id)}" title="Убрать">✕</a></div>`).join('') || '<span class="muted small">нет — везде основной адрес</span>'}
             <div class="row" style="gap:6px;margin-top:4px"><button class="btn btn-sm" data-act="addrNew" data-c="${esc(cl.id)}" data-k="temp">+ Адрес на период</button>
               <button class="btn btn-sm" data-act="addrNew" data-c="${esc(cl.id)}" data-k="sched">+ Адрес по графику</button></div></div></div>
-          <label class="field full"><span>Комментарий о клиенте</span><textarea class="input" name="c_comment" rows="2" data-perm="clients.edit">${esc(cl.comment)}</textarea></label>
           ${(cl.aiAllow || []).length ? `<div class="field full"><span>Проверка аллергий: клиенту можно</span><div class="row" style="gap:6px">
             ${(cl.aiAllow || []).map((a, i) => `<span class="tag" title="${esc(a.reason || '')}">✓ ${esc(a.dish)} <a data-act="allowDel" data-c="${esc(cl.id)}" data-i="${i}" title="Убрать — ИИ снова будет предупреждать">✕</a></span>`).join('')}
           </div></div>` : ''}
         </div>
-        <div class="actions"><button class="btn btn-sm btn-green" data-act="saveClient" data-id="${esc(cl.id)}">${can('clients.edit') ? 'Сохранить контакты' : 'Сохранить адрес и телефон'}</button>
-        <span class="muted small" style="align-self:center">В базе с ${fmt(dn((cl.createdAt || '').slice(0, 10)))}</span></div>
       </div>
       ${cur}
     </div>
@@ -6898,7 +6928,7 @@ function showImportPreview(filename, kind, inc, raw, stats) {
 /* ---------------------------------------------------------------- действия */
 const ACT = {
   nav: d => { if (d.tab) S.adminTab = d.tab; go(d.view); },
-  closeModal: () => closeModal(),
+  closeModal: () => userCloseModal(),
   setStatus: d => { S.cf.status = d.v; S.cf.limit = 150; render(); },
   more: () => { S.cf.limit += 300; updateClientsTable(); },
   newClient: () => openOrderForm({ newClient: true }),
@@ -6930,12 +6960,10 @@ const ACT = {
     const root = el.closest('.modal');
     const cl = CLIENTS.get(d.id);
     if (!cl || !root) return;
-    const v = n => root.querySelector(`[name="${n}"]`).value.trim();
-    if (!v('c_name')) { toast('ФИО не может быть пустым', 'bad'); return; }
-    const nv = { name: v('c_name').replace(/\s+/g, ' '), phone: v('c_phone'), address: v('c_address'), comment: v('c_comment') };
-    if (!can('clients.edit')) { nv.name = cl.name; nv.comment = cl.comment || ''; } // только адрес и телефон
+    if (!root.querySelector('[name="c_name"]').value.trim()) { toast('ФИО не может быть пустым', 'bad'); return; }
+    const nv = contactValues(root, cl);
     const lbl = { name: 'ФИО', phone: 'телефон', address: 'адрес', comment: 'комментарий' };
-    const diff = Object.keys(nv).filter(k => String(cl[k] || '') !== nv[k])
+    const diff = contactDiff(root, cl)
       .map(k => (k === 'address' || k === 'comment' ? `${lbl[k]} изменён` : `${lbl[k]}: «${shorten(cl[k] || '—', 40)}» → «${shorten(nv[k] || '—', 40)}»`));
     if (!diff.length) { toast('Изменений нет', ''); return; }
     const oldName = cl.name, oldAddr = cl.address;
@@ -8102,7 +8130,7 @@ for (const type of ['input', 'change']) {
 }
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
-  if (MODALS.length) closeModal();
+  if (MODALS.length) userCloseModal();
   else document.body.classList.remove('shot');
 });
 $('#fileInput').addEventListener('change', e => {
