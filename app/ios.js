@@ -247,6 +247,24 @@
       return;
     }
     if (!st.needMerge && await localDirty() && t - lastPush > PUSH_GAP) await push();
+    if (!await localDirty()) try { await prepRelease(); } catch { /* не успели — освободится по старинке */ }
+  }
+  // готовая запись «Программа свободна» поверх текущей: при закрытии вкладки остаётся один запрос — браузер успевает его отправить
+  let rel = { key: '', tree: '', commit: '', parent: '' };
+  async function prepRelease() {
+    if (rel.parent === headSha) return;
+    const text = JSON.stringify({ ...headState, lock: null }), key = text + '|' + headEnt['base.json.gz'];
+    if (rel.key !== key) rel = { ...rel, key, tree: await mkTree({ ...headEnt, 'state.json': await putBlob(enc.encode(text)) }) }; // сигнал меняет только lock — дерево то же
+    rel.commit = await mkCommit('Программа свободна (вкладку закрыли или свернули) · ' + who, rel.tree, headSha);
+    rel.parent = headSha;
+  }
+  function releaseNow() {
+    if (st.mode !== 'owner' || !token() || dirtyNow || !rel.commit || rel.parent !== headSha) return;
+    try { // без force: если в облаке уже что-то новее, GitHub просто откажет
+      F(apiBase() + rp('/git/refs/heads/data'), { method: 'PATCH', keepalive: true, cache: 'no-store',
+        headers: { Authorization: 'Bearer ' + token(), Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sha: rel.commit, force: false }) }).catch(() => {});
+    } catch { /* старый браузер — освободится через полторы минуты */ }
   }
 
   /* ---------------------------------------------------------------- перенос облака: пометка «переехало» в старом */
@@ -394,8 +412,8 @@
   function start() { running = true; holdOff = false; wake(); }
   function stop() { running = false; serial(release); }
   // свернули Safari или ушли на другую вкладку — отдаём программу офису, вернулись — снова работаем
-  document.addEventListener('visibilitychange', () => (document.hidden ? stop() : start()));
-  window.addEventListener('pagehide', stop);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { releaseNow(); stop(); } else start(); });
+  window.addEventListener('pagehide', () => { releaseNow(); stop(); });
 
   function status() {
     return { ...st, tokenExpires: tokenExp, connected: !!token(), repo: repo(), reader, me: me(), localRev: local.rev || 0, clouds: [], news,
