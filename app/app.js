@@ -1122,7 +1122,7 @@ function clientModalParts(cl) {
       <button class="tbtn-add" data-act="tagQuick" data-c="${esc(cl.id)}" data-k="${k}">${add}</button></div>`;
   };
   const body = `
-    ${tagRow('tags', 'Пометки:', 'toggleTag', 'tagIn', 'Введите пометку…', '+ своя пометка')}
+    ${can('clients.edit') ? tagRow('tags', 'Пометки:', 'toggleTag', 'tagIn', 'Введите пометку…', '+ своя пометка') : ''}
     ${tagRow('ctags', 'Для курьера:', 'toggleCtag', 'ctagIn', 'Введите тег…', '+ свой тег')}
     <div class="client-top">
       <div>
@@ -1140,7 +1140,7 @@ function clientModalParts(cl) {
             ${(cl.aiAllow || []).map((a, i) => `<span class="tag" title="${esc(a.reason || '')}">✓ ${esc(a.dish)} <a data-act="allowDel" data-c="${esc(cl.id)}" data-i="${i}" title="Убрать — ИИ снова будет предупреждать">✕</a></span>`).join('')}
           </div></div>` : ''}
         </div>
-        <div class="actions"><button class="btn btn-sm" data-act="saveClient" data-id="${esc(cl.id)}">${can('clients.edit') ? 'Сохранить контакты' : 'Сохранить адрес и телефон'}</button>
+        <div class="actions"><button class="btn btn-sm btn-green" data-act="saveClient" data-id="${esc(cl.id)}">${can('clients.edit') ? 'Сохранить контакты' : 'Сохранить адрес и телефон'}</button>
         <span class="muted small" style="align-self:center">В базе с ${fmt(dn((cl.createdAt || '').slice(0, 10)))}</span></div>
       </div>
       ${cur}
@@ -2897,7 +2897,7 @@ function courierBaseChoose(kind) {
     },
   });
 }
-const courierBaseName = (d, t) => `База Ташкент курьеров (${t === 'вечер' ? 'ВЕЧЕР' : 'УТРО'}) ${fmtS(d)}`;
+const courierBaseName = (d, t) => `База Ташкент курьеров (${t === 'вечер' ? 'ВЕЧЕР' : 'УТРО'}) ${fmt(d)}`;
 // курьеры по алфавиту («Без курьера» — в конце); у курьера — программы по калоражу (1200, 1800 … Fasting), в программе — по ФИО
 function courierRows(d, t) {
   return courierGroups(deliveriesOn(d).filter(r => r.o.time === t));
@@ -2922,11 +2922,12 @@ async function courierXlsx(d, t) {
   if (!names.length) { toast('На эту смену доставок нет', 'bad'); return; }
   const fname = courierBaseName(d, t);
   // вид как в старой базе: строка калоража голубая на всю ширину, сетка, курьер и телефон подсвечены
-  const N = BASE_COLS.length, last = [[0, N - 1]];
-  const line = (text, st) => ({ cells: [text, ...Array(N - 1).fill('')], st: Object.fromEntries(BASE_COLS.map((_, k) => [k, st])), merge: last });
-  const cellSt = { 0: 'num', 1: 'cellb', 2: 'cell', 3: 'cellb', 4: 'cell', 5: 'cell', 6: 'cell', 7: 'cell' };
+  const COLS = BASE_COLS.slice(2); // без «№» и «Курьер»: курьер — в названии листа и в строке смены
+  const N = COLS.length, last = [[0, N - 1]];
+  const line = (text, st) => ({ cells: [text, ...Array(N - 1).fill('')], st: Object.fromEntries(COLS.map((_, k) => [k, st])), merge: last });
+  const cellSt = { 0: 'cell', 1: 'cellb', 2: 'cell', 3: 'cell', 4: 'cell', 5: 'cell' };
   const sheet = name => {
-    const rows = [{ cells: BASE_COLS, st: Object.fromEntries(BASE_COLS.map((_, k) => [k, 'hdr'])) }];
+    const rows = [{ cells: COLS, st: Object.fromEntries(COLS.map((_, k) => [k, 'hdr'])) }];
     for (const [day, t, m] of shifts) {
       const list = m.get(name) || [];
       if (!list.length) continue;
@@ -2934,10 +2935,10 @@ async function courierXlsx(d, t) {
       let i = 0;
       for (const [prog, l] of byProg(list)) {
         rows.push(line(`${String(prog).replace(/\s*ккал$/i, '')} — ${l.length}`, 'pgroup'));
-        for (const r of l) { const v = baseRow(r, i++); v[3] = phoneXl(r.cl.phone); v[5] = r.o.timeAt || r.o.time; rows.push({ cells: v, st: cellSt }); }
+        for (const r of l) { const v = baseRow(r, i++); v[3] = phoneXl(r.cl.phone); v[5] = r.o.timeAt || r.o.time; rows.push({ cells: v.slice(2), st: cellSt }); }
       }
     }
-    return { name, widths: [5, 12, 26, 17, 60, 8, 12, 40], rows, fit: true };
+    return { name, widths: [26, 17, 60, 8, 12, 40], rows, fit: true };
   };
   try {
     const p = await exportFile('xlsx', fname, { sheets: names.map(sheet) });
