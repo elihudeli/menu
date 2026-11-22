@@ -499,7 +499,7 @@ async function syncTick() {
   showNews(st.news);
   if (st.updated && !S.updToast) { // новая версия скачалась сама — зелёное окошко «Обновить сейчас»
     S.updToast = true;
-    if (window.EHAndroid) updateBox({ title: 'Вышло обновление программы', lines: (st.news && st.news.lines) || [], go: () => location.reload(), later: () => { S.updToast = false; } });
+    if (window.EHAndroid) updateBox({ title: 'Вышло обновление программы', lines: (st.news && st.news.lines) || [], go: () => location.reload(), later: () => setTimeout(() => { S.updToast = false; }, 30 * 60e3) });
     else checkAppUpdate();
   }
   if (!prev || prev.mode !== st.mode || JSON.stringify(prev.holder) !== JSON.stringify(st.holder)) {
