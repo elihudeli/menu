@@ -66,7 +66,7 @@ const firstView = () => ['mine', 'clients', 'delivery', 'packing', 'ending', 'me
 // какое право нужно для действия (кнопки data-act) и для поля (data-bind)
 const ACT_PERM = {
   newClient: 'clients.edit', newOrder: 'clients.edit', renewOrder: 'clients.edit', editOrder: 'clients.edit',
-  findReturners: 'clients.edit', freezeOrder: 'clients.edit', shiftsOrder: 'clients.edit', skipOrder: 'clients.edit', stopOrder: 'clients.edit', returnOrder: 'clients.edit', deleteOrder: 'clients.edit',
+  findReturners: 'clients.edit', changeProg: 'clients.edit', transferDays: 'clients.edit', freezeOrder: 'clients.edit', shiftsOrder: 'clients.edit', skipOrder: 'clients.edit', stopOrder: 'clients.edit', returnOrder: 'clients.edit', deleteOrder: 'clients.edit',
   deleteClient: 'clients.edit', toggleTag: 'clients.edit', pickDays: 'clients.edit', remindNow: 'clients.edit', allowDel: 'clients.edit', mergeCombo: 'clients.edit',
   saveClient: () => (can('clients.edit') ? 'clients.edit' : 'clients.address'),
   bulkSet: d => (d.k === 'courier' ? 'couriers.assign' : 'clients.edit'),
