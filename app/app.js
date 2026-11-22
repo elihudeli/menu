@@ -6172,8 +6172,16 @@ const ALINA_SVG = `<svg class="sc-svg" viewBox="0 0 70 160" aria-hidden="true">
   <circle class="al-eye" cx="30.6" cy="35.4" r="1.3" fill="#2b1b1b"/><circle class="al-eye" cx="39.6" cy="35.4" r="1.3" fill="#2b1b1b"/>
   <circle cx="27.6" cy="39.6" r="1.9" fill="#f08a8a" opacity=".35"/><circle cx="42.4" cy="39.6" r="1.9" fill="#f08a8a" opacity=".35"/>
   <path d="M32 41.4q3 2 6 0" stroke="#b3364a" stroke-width="1.3" fill="none" stroke-linecap="round"/></svg>`;
+// «Журнал управляющей» → «Заставка»: кого убрать из сцены (например, если сотрудник уволился)
+const SCENE_PEOPLE = [['asif', 'Асифа'], ['umid', 'Умида'], ['alina', 'Алину'], ['nargiz', 'Наргиз'], ['yulia', 'Юлию Викторовну'], ['eleonora', 'Элеонору']];
+const sceneOn = who => !(db.settings.sceneHide || []).includes(who);
+function sceneCard() {
+  return `<div class="card" style="margin-bottom:16px"><h2>Заставка</h2>
+    <div class="muted small" style="margin-bottom:10px">Кого не показывать в заставке и внизу «Передачи смены» — например, если сотрудник уволился.</div>
+    <div class="checks" style="flex-wrap:wrap;gap:8px 18px">${SCENE_PEOPLE.map(([w, l]) => `<label><input type="checkbox" data-bind="sceneHide" data-k="${w}" ${sceneOn(w) ? '' : 'checked'}> Убрать ${l}</label>`).join('')}</div></div>`;
+}
 function asifHtml() {
-  const ch = (who, name, svg) => `<div class="sc-char sc-${who}" data-who="${who}">${svg}<div class="sc-name" data-notr>${name}</div></div>`;
+  const ch = (who, name, svg) => (!sceneOn(who) ? '' : `<div class="sc-char sc-${who}" data-who="${who}">${svg}<div class="sc-name" data-notr>${name}</div></div>`);
   return `<div class="scene no-print" id="scene" aria-hidden="true">
     <div class="sc-spot"></div>
     ${ch('asif', 'Асиф', ASIF_SVG.replace('class="asif-svg"', 'class="sc-svg asif-svg"'))}
@@ -6212,7 +6220,9 @@ function startAsif() {
   const say = () => {
     const lane = $('#scene'), bub = $('#scSay');
     if (!lane || !bub) { clearInterval(S.asifTimer); cancelAnimationFrame(S.scRaf); return; }
-    const pool = ['yulia', 'yulia', 'asif', 'asif', 'nargiz', 'nargiz', 'alina', 'alina', 'umid', 'umid', 'eleonora', 'eleonora'].filter(w => w !== last);
+    const on = ['yulia', 'asif', 'nargiz', 'alina', 'umid', 'eleonora'].filter(sceneOn);
+    if (!on.length) return; // всех убрали — говорить некому
+    const pool = on.flatMap(w => [w, w]).filter(w => w !== last || on.length === 1);
     who = last = pool[Math.floor(Math.random() * pool.length)];
     const list = SCENE_SAY[who][lang()] || SCENE_SAY[who].ru;
     bub.textContent = list[Math.floor(Math.random() * list.length)];
@@ -6339,6 +6349,7 @@ function viewManager() {
   return `
   <div class="page-head"><h1>Журнал управляющей</h1><div class="spacer"></div><button class="btn btn-red" data-act="wipeBase">Стереть всю базу</button></div>
   ${devicesCard()}
+  ${sceneCard()}
   <div class="page-head" style="display:none"><div class="sub">кому добавляли и отнимали дни, удаления, действия задним числом и ночью</div></div>
   <div class="stats">
     ${tile('+' + sum(plus), `дней добавили действующим (${plus.length} раз)`, 's-idle')}
@@ -7978,6 +7989,13 @@ const BIND = {
     if (t !== 'change') return;
     db.settings.ai[el.dataset.k] = el.checked;
     commit(`ИИ: ${el.dataset.k === 'autoKbju' ? 'автоподсчёт КБЖУ' : 'автопроверка аллергий'} ${el.checked ? 'включён' : 'выключен'}`, 'admin');
+  },
+  sceneHide: (_v, el, t) => {
+    if (t !== 'change') return;
+    const k = el.dataset.k, set = new Set(db.settings.sceneHide || []);
+    if (el.checked) set.add(k); else set.delete(k);
+    db.settings.sceneHide = [...set];
+    commit(`Заставка: ${el.checked ? 'убрать' : 'вернуть'} ${(SCENE_PEOPLE.find(p => p[0] === k) || [0, k])[1]}`);
   },
   yandexMaps: (_v, el, t) => {
     if (t !== 'change') return;
