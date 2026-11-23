@@ -334,7 +334,7 @@ const ACCESS_ACT = {
     });
   },
   devRemove: d => {
-    db.settings.devRemoved = [...(db.settings.devRemoved || []), { ids: d.ids.split(','), label: d.label, at: localIso() }];
+    db.settings.devRemoved = [...(db.settings.devRemoved || []), { ids: d.ids.split(','), label: d.label, at: localIso(), ...(d.seen !== undefined ? { seen: d.seen } : {}) }];
     db.settings.devRemovedAt = localIso();
     audit(`Устройство удалено из списка: ${d.label}`, { kind: 'admin', sev: 'warn' });
     commit(`Устройство удалено из списка: ${d.label}`);
@@ -621,15 +621,19 @@ document.addEventListener('visibilitychange', () => {
 
 /* ---------------------------------------------------------------- устройства (для управляющей): кто подключается, блокировка */
 const devIds = d => [d.machine, d.inst].filter(Boolean);
-// удалённое из списка устройство остаётся заблокированным; список хранится в базе, вернуть можно в настройках
-const devGone = ids => (db.settings.devRemoved || []).some(r => (r.ids || []).some(id => ids.includes(id)));
+// убранное из списка устройство скрыто (заблокированное — остаётся заблокированным); вернуть можно в «Удалённых устройствах».
+// Незаблокированное, подключившееся снова после удаления, само возвращается в список
+const devGone = (ids, seen = '') => (db.settings.devRemoved || []).some(r => (r.ids || []).some(id => ids.includes(id)) && !(seen && r.seen !== undefined && seen > (r.seen || r.at || '')));
 function devRemovedCard() {
   if (!can('roles')) return '';
-  const list = db.settings.devRemoved || [];
-  return `<div class="card"><h2>Удалённые устройства</h2>
-    <div class="muted small">Они остаются заблокированными. «Вернуть» снова покажет устройство в журнале управляющей, там его можно разблокировать.</div>
+  // устройство, которое снова подключилось и вернулось в «Устройства», здесь не показываем
+  const back = r => r.seen !== undefined && ((S.devs || {}).devices || []).some(d => (r.ids || []).some(id => devIds(d).includes(id)) && d.seen > (r.seen || r.at || ''));
+  const list = (db.settings.devRemoved || []).filter(r => !back(r));
+  if (!list.length) return '';
+  return `<div class="card"><details><summary><h2 style="display:inline">Корзина устройств</h2> <span class="count-pill">${list.length}</span></summary>
+    <div class="muted small mt">Убраны из списка «Устройства». Заблокированные остаются заблокированными; незаблокированное устройство, подключившись снова, само вернётся в список. «Вернуть» — показать сейчас.</div>
     ${list.length ? `<div class="table-wrap mt"><table class="t compact"><tbody>${list.map(r => `<tr><td class="name">${esc(r.label || '—')}</td><td class="nowrap">${esc(r.at ? fmtStamp(r.at) : '')}</td>
-      <td class="right"><button class="btn btn-sm" data-act="devRestore" data-ids="${esc((r.ids || []).join(','))}">Вернуть</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="muted mt">Удалённых устройств нет</div>'}</div>`;
+      <td class="right"><button class="btn btn-sm" data-act="devRestore" data-ids="${esc((r.ids || []).join(','))}">Вернуть</button></td></tr>`).join('')}</tbody></table></div>` : ''}</details></div>`;
 }
 // iOS / Сайт версия (по ссылке из установщика); старые записи — по названию устройства
 const isWebDev = d => !!d.web || /^(iPhone|iPad|MacBook|Сайт)/.test(String(d.pc || ''));
@@ -641,13 +645,14 @@ function devicesCard() {
   const pinBtn = d => `<button class="btn btn-sm" data-act="devPin" data-id="${esc(d.machine)}">PIN${((db.settings.devPins || {})[d.machine] || {}).hash ? ' *' : ''}</button>`;
   const blockedOf = d => (D.blocked || []).find(b => (b.ids || []).some(id => devIds(d).includes(id)));
   const ago = iso => { const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000); return m < 2 ? 'сейчас' : m < 60 ? `${m} мин назад` : m < 1440 ? `${Math.round(m / 60)} ч назад` : fmtStamp(iso); };
-  const rows = !D ? '' : (D.devices || []).filter(d => !devGone(devIds(d))).map(d => {
+  const rows = !D ? '' : (D.devices || []).filter(d => !devGone(devIds(d), d.seen)).map(d => {
     const b = blockedOf(d), me = d.machine === D.machine;
     const label = `${d.who || '—'} · ${d.pc || ''}`;
     return `<tr class="${b ? 'dev-blocked' : ''}"><td class="name">${esc(d.who || '—')}${me ? ' <span class="muted small">(это устройство)</span>' : ''}</td>
       <td>${esc(roleDefs()[d.role]?.name || d.role || '')}</td><td>${esc(d.pc || '')}</td><td class="nowrap">${d.seen ? esc(ago(d.seen)) : ''}</td>
       <td class="right nowrap">${me ? pinBtn(d) : b ? `<span class="pill">заблокировано</span> <button class="btn btn-sm" data-act="devBlock" data-on="" data-ids="${esc(devIds(d).join(','))}" data-label="${esc(label)}">Разблокировать</button> <button class="btn btn-sm" data-act="devRemove" data-ids="${esc(devIds(d).join(','))}" data-label="${esc(label)}">Удалить</button>`
-    : `${pinBtn(d)} ${FULL_ROLES.includes(d.role) ? '<span class="muted small">все права</span> ' : `<button class="btn btn-sm" data-act="devPerms" data-id="${esc(d.machine)}">Права${Object.keys((db.settings.devPerms || {})[d.machine] || {}).length ? ' *' : ''}</button> `}<button class="btn btn-sm btn-red" data-act="devBlock" data-on="1" data-ids="${esc(devIds(d).join(','))}" data-label="${esc(label)}">Заблокировать</button>${isWebDev(d) ? ` <button class="btn btn-sm btn-red" data-act="devUserDel" data-ids="${esc(devIds(d).join(','))}" data-label="${esc(label)}">Удалить пользователя</button>` : ''}`}</td></tr>`;
+    : `${pinBtn(d)} ${FULL_ROLES.includes(d.role) ? '<span class="muted small">все права</span> ' : `<button class="btn btn-sm" data-act="devPerms" data-id="${esc(d.machine)}">Права${Object.keys((db.settings.devPerms || {})[d.machine] || {}).length ? ' *' : ''}</button> `}<button class="btn btn-sm btn-red" data-act="devBlock" data-on="1" data-ids="${esc(devIds(d).join(','))}" data-label="${esc(label)}">Заблокировать</button>${isWebDev(d) ? ` <button class="btn btn-sm btn-red" data-act="devUserDel" data-ids="${esc(devIds(d).join(','))}" data-label="${esc(label)}">Удалить пользователя</button>` // сайт-версия: ссылка перестаёт работать
+      : ` <button class="btn btn-sm" data-act="devRemove" data-ids="${esc(devIds(d).join(','))}" data-label="${esc(label)}" data-seen="${esc(d.seen || '')}" title="Только убрать строку из списка — устройство не блокируется; подключится снова — вернётся в список">Убрать из списка</button>`}`}</td></tr>`;
   }).join('');
   const orphan = !D ? '' : (D.blocked || []).filter(b => !devGone(b.ids || []) && !(D.devices || []).some(d => (b.ids || []).some(id => devIds(d).includes(id))))
     .map(b => `<tr class="dev-blocked"><td class="name" colspan="3">${esc(b.label || '')}</td><td class="nowrap">${esc(b.at ? fmtStamp(b.at) : '')}</td>
