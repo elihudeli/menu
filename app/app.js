@@ -7146,7 +7146,7 @@ function xlSheetXml(sh) {
   const columns = sh.columns || [], rows = sh.rows || [], widths = sh.widths || [], intro = sh.intro || [];
   const last = xlCol(Math.max(columns.length, 1) - 1), top = (sh.title ? 1 : 0) + intro.length;
   const st = (m, i, def) => XL_CELL_STYLE[(m || {})[i] ?? (m || {})[String(i)]] ?? def;
-  const merges = [], out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'];
+  const merges = [], breaks = [], out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'];
   if (sh.fit) out.push('<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>');
   if (columns.length) out.push(`<sheetViews><sheetView workbookViewId="0"><pane ySplit="${1 + top}" topLeftCell="A${2 + top}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`);
   if (widths.length || columns.length) out.push('<cols>' + Array.from({ length: Math.max(widths.length, columns.length) }, (_, i) => `<col min="${i + 1}" max="${i + 1}" width="${widths[i] || 16}" customWidth="1"/>`).join('') + '</cols>');
@@ -7161,14 +7161,18 @@ function xlSheetXml(sh) {
   const head = r;
   if (columns.length) { out.push(`<row r="${r}">${columns.map((c, i) => xlCell(xlCol(i) + r, c, 1)).join('')}</row>`); r++; }
   for (const row of rows) {
-    if (row && !Array.isArray(row) && 'title' in row) {
+    if (row && !Array.isArray(row) && 'title' in row) { // раздел; pageBreak — с новой печатной страницы (как в xlsx_io.py)
+      if (row.pageBreak && r > head + 1) breaks.push(r - 1);
       out.push(`<row r="${r}" ht="24" customHeight="1">${xlCell('A' + r, row.title, 8)}</row>`);
       if (columns.length) merges.push(`A${r}:${last}${r}`);
     } else if (row && !Array.isArray(row) && 'cells' in row) {
       out.push(`<row r="${r}">${row.cells.map((v, i) => xlCell(xlCol(i) + r, v, st(row.st, i, 2))).join('')}</row>`);
       for (const [a, z] of row.merge || []) merges.push(`${xlCol(a)}${r}:${xlCol(z)}${r}`);
-    } else if (row && !Array.isArray(row)) {
-      out.push(`<row r="${r}">${xlCell('A' + r, row.group || '', 3)}</row>`);
+    } else if (row && !Array.isArray(row)) { // строка группы: при mergeGroups — во всю ширину, с заливкой
+      if (sh.mergeGroups && columns.length) {
+        out.push(`<row r="${r}" ht="20" customHeight="1">${xlCell('A' + r, row.group || '', 3)}${columns.slice(1).map((_, i) => `<c r="${xlCol(i + 1)}${r}" s="3"/>`).join('')}</row>`);
+        merges.push(`A${r}:${last}${r}`);
+      } else out.push(`<row r="${r}">${xlCell('A' + r, row.group || '', 3)}</row>`);
     } else out.push(`<row r="${r}">${(row || []).map((v, i) => xlCell(xlCol(i) + r, v, 2)).join('')}</row>`);
     r++;
   }
@@ -7176,7 +7180,9 @@ function xlSheetXml(sh) {
   if (columns.length && rows.length && !sh.mergeGroups) out.push(`<autoFilter ref="A${head}:${xlCol(columns.length - 1)}${r - 1}"/>`);
   if (merges.length) out.push(`<mergeCells count="${merges.length}">${merges.map(m => `<mergeCell ref="${m}"/>`).join('')}</mergeCells>`);
   out.push('<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>');
-  out.push(`<pageSetup${sh.fit ? ' paperSize="9" fitToWidth="1"' : ''} orientation="${sh.orientation || 'landscape'}" fitToHeight="0"/></worksheet>`);
+  out.push(`<pageSetup${sh.fit ? ' paperSize="9" fitToWidth="1"' : ''} orientation="${sh.orientation || 'landscape'}" fitToHeight="0"/>`);
+  if (breaks.length) out.push(`<rowBreaks count="${breaks.length}" manualBreakCount="${breaks.length}">${breaks.map(b => `<brk id="${b}" max="16383" man="1"/>`).join('')}</rowBreaks>`);
+  out.push('</worksheet>');
   return out.join('');
 }
 const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
@@ -7271,6 +7277,17 @@ function shareAgain(file, blob, name) {
 // приложение Android (не сайт-версия): файлы отдаёт только если в нём есть мост saveFile
 const nativeAndroid = () => !!(window.EHAndroid && window.EHAndroid.print);
 const canFileHere = () => !window.EHAndroid || !nativeAndroid() || !!window.EHAndroid.saveFile;
+// Excel: на телефоне и в сайт-версии книга собирается здесь же и отдаётся через «Поделиться» / скачивание; на компьютере — файл в папку
+async function saveXlsx(fname, sheets) {
+  if (window.EHAndroid) {
+    const how = await deliverFile(fname + '.xlsx', xlsxBlob(sheets));
+    if (how !== 'cancel') toast(how === 'download' ? 'Excel скачан: ' + fname : 'Excel готов: ' + fname, 'ok', 5000);
+    return;
+  }
+  const p = await exportFile('xlsx', fname, { sheets });
+  await api('POST', '/api/open-folder', JSON.stringify({ path: p }));
+  toast('Excel готов: ' + p, 'ok', 6000);
+}
 async function exportFile(kind, filename, payload) {
   const r = await api('POST', '/api/export', JSON.stringify({ kind, filename, ...payload }));
   return r.path;
@@ -7663,9 +7680,7 @@ const ACT = {
       const D = S.pd;
       const lg = LANGS[lsGet('eh_plang')] ? lsGet('eh_plang') : 'ru';
       if (lg !== 'ru') await ensureAlTr(lg, packingGroups(D).flatMap(([, l]) => l).map(r => r.o.allergen));
-      const p = await exportFile('xlsx', `Фасовка_${fmt(D)}${lg === 'ru' ? '' : '_' + lg}`, { sheets: [sheetPacking(D, lg), sheetPackingSummary(D, lg)] });
-      await api('POST', '/api/open-folder', JSON.stringify({ path: p }));
-      toast('Excel готов: ' + p, 'ok', 6000);
+      await saveXlsx(`Фасовка_${fmt(D)}${lg === 'ru' ? '' : '_' + lg}`, [sheetPacking(D, lg), sheetPackingSummary(D, lg)]);
     } catch (e) { toast('Ошибка: ' + e.message, 'bad'); }
   },
   exportBoth: () => doHandoff(['json', 'xlsx']),
