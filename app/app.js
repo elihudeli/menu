@@ -457,6 +457,8 @@ function orderState(o, D) {
   if (D > c.end) {
     // индивидуальные дни: пока не все даты выбраны, заказ продолжается (но не дольше 60 дней без новых дат)
     if (c.open && D - Math.max(c.end, c.start) <= 60) return 'active';
+    // как в Excel: день внутри заморозки — «Заморозка», даже если дней по заказу не осталось
+    if (!o.stopped && frozenAt(o, D)) return 'frozen';
     return o.stopped ? 'stopped' : 'done';
   }
   if (frozenAt(o, D)) return 'frozen';
@@ -482,7 +484,8 @@ function clientInfo(cl) {
     if (c.list.length && (lastEnd === null || c.end > lastEnd)) lastEnd = c.end;
   }
   // «Остановить» = заморозка на неопределённый срок: клиент не питается (но оставшиеся дни сохранены)
-  const paused = !!cur && curSt === 'frozen' && calc(cur).indefFrom !== undefined && TODAY >= calc(cur).indefFrom;
+  // заморожен, а дней по заказу уже не осталось (как в Excel) — тоже не питается
+  const paused = !!cur && curSt === 'frozen' && ((calc(cur).indefFrom !== undefined && TODAY >= calc(cur).indefFrom) || TODAY > calc(cur).end);
   let status;
   if (next || (cur && !paused)) status = 'active';
   else {
@@ -867,8 +870,11 @@ function clientsTagBar() {
   }
   const keyOf = x => (x.k === 'tags' ? x.t.id : 'c:' + x.t.id), all = tagAll();
   const chosen = all.filter(x => (f.tags || []).includes(keyOf(x)));
-  return `<div class="tf-bar no-print"><input class="input tf-in" list="dlCfTags" data-bind="cfTagIn" placeholder="Фильтр: пометка или тег…" autocomplete="off">
-    <datalist id="dlCfTags">${tagOptions(all.filter(x => !chosen.includes(x)).map(x => ({ ...x, n: n.get(keyOf(x)) || 0 })))}</datalist>
+  // список, а не поле ввода — чтобы не путать с поиском по ФИО в шапке таблицы
+  const opts = k => all.filter(x => x.k === k && !chosen.includes(x)).map(x => `<option value="${esc(keyOf(x))}">${esc(x.t.name)} (${n.get(keyOf(x)) || 0})</option>`).join('');
+  return `<div class="tf-bar no-print"><span class="tf-lbl">🏷 Пометки и теги:</span>
+    <select class="input tf-sel" data-bind="cfTagSel"><option value="">+ выбрать…</option>
+      ${opts('tags') ? `<optgroup label="Пометки">${opts('tags')}</optgroup>` : ''}${opts('ctags') ? `<optgroup label="Теги для курьера">${opts('ctags')}</optgroup>` : ''}</select>
     ${chosen.map(x => `<button class="tf on" data-act="cfTag" data-v="${esc(keyOf(x))}" title="Убрать из фильтра" style="--tc:${x.t.color};--tf:${isDarkColor(x.t.color) ? '#fff' : '#111'}">${esc(x.t.name)} <b>${n.get(keyOf(x)) || 0}</b> ×</button>`).join('')}</div>`;
 }
 const filtersOn = () => !!((S.cf.tags || []).length || S.cf.q || S.cf.phone || S.cf.courier || S.cf.manager || S.cf.program || S.cf.time || S.cf.special
@@ -1099,7 +1105,7 @@ function clientModalParts(cl) {
         ${o.stages ? `<b>Этапы</b><span>${o.stages.map((x, i) => { const cur = stageAt(o, done); return `<span class="tag ${cur && cur.i === i && st !== 'future' ? 'first' : ''}">${i + 1}. ${esc(x.label)} · ${x.days} дн.</span>`; }).join(' ')}</span>` : ''}
         <b>Дни доставки</b><span>${esc(orderDaysText(o))}${o.dayMode === 'custom' ? ` · выбрано ${k.list.length} из ${o.days}` : ''}</span>
         <b>Праздники</b><span>${esc(holidayText(o))}</span>
-        <b>Время</b><span>${esc(o.timeAt || o.time)}</span>
+        <b>Время</b><span>${esc(o.timeAt || o.time)}${isOpen && !o.timeAt ? ` <button class="btn btn-sm" data-act="flipTime" data-id="${esc(o.id)}" title="Перевести заказ на другую смену доставки">${o.time === 'вечер' ? '☀ на утро' : '☾ на вечер'}</button>` : ''}</span>
         ${o.company ? `<b>Компания</b><span>${esc(o.company)}</span>` : ''}
         ${o.persons ? `<b>Человек</b><span>${o.persons}</span>` : ''}
         <b>Постоянный курьер</b><span>${can('couriers.assign') ? `<select class="input" style="max-width:200px;padding:3px 6px" data-bind="dcour" data-id="${esc(o.id)}" title="Меняется во всех текущих и будущих заказах клиента"><option value="">— без курьера —</option>${courOpts(o.courier || '')}</select>` : chip('couriers', o.courier)}</span>
@@ -1211,6 +1217,20 @@ function findClientsByName(name, phone) {
   const live = c => (['active', 'frozen'].includes(cliKey(CINFO.get(c.id))) ? 1 : 0);
   return out.sort((a, b) => b[0] - a[0] || live(b[1]) - live(a[1])).map(x => x[1]);
 }
+// имя в сообщении и в базе совпадает дословно (порядок слов не важен); иначе в окне «?» — проверить, тот ли клиент
+const sameName = (c, name) => nameTokens(c.name).sort().join(' ') === nameTokens(name).sort().join(' ');
+// точного совпадения нет — похожие по имени (в окне такие помечены «?»): похожесть слов, начало слова, действующие выше
+function findClientsApprox(name) {
+  const q = nameTokens(name);
+  if (!q.length) return [];
+  const sim = (a, b) => (a === b ? 1 : b.startsWith(a) || a.startsWith(b) ? 0.85 : 1 - lev(a, b) / Math.max(a.length, b.length));
+  const live = c => (['active', 'frozen'].includes(cliKey(CINFO.get(c.id))) ? 0.05 : 0);
+  return db.clients.map(c => {
+    const t = nameTokens(c.name);
+    const s = t.length ? q.reduce((a, w) => a + Math.max(...t.map(x => sim(w, x))), 0) / q.length : 0;
+    return [s + live(c), c];
+  }).filter(x => x[0] >= 0.6).sort((a, b) => b[0] - a[0]).slice(0, 6).map(x => x[1]);
+}
 const openOrdersOf = cl => (CINFO.get(cl.id)?.orders || []).filter(o => !['done', 'stopped'].includes(orderState(o, TODAY)));
 const lastOrderOf = cl => (CINFO.get(cl.id)?.orders || []).slice().sort((a, b) => calc(b).end - calc(a).end)[0] || null;
 // «АЛИНАААААААА», «Умид ОМ» → ответственный из списка
@@ -1224,6 +1244,19 @@ function planChatEdit(cl, changes) {
   const say = (t, fn = null, cls = '') => steps.push({ t, fn, cls });
   for (const ch of changes || []) {
     const v = String(ch.value ?? ch.text ?? '').trim();
+    // «Ответственный Асиф» под именем клиента — смена ответственного, даже если ИИ принял это за пожелание
+    const mt = ch.type === 'manager' ? v : ch.type === 'allergen_add' && /^(ответственн\S*|отв\.?)\s*[:\-—]?\s*/i.test(v) ? v.replace(/^(ответственн\S*|отв\.?)\s*[:\-—]?\s*/i, '') : null;
+    if (mt !== null) {
+      const m = managerOf(mt), list = os.length ? os : [lastOrderOf(cl)].filter(Boolean);
+      if (!m) say(`Ответственный «${esc(mt)}» — такого сотрудника нет в списке ответственных`, null, 'warn');
+      else if (!list.length) say(`Ответственный ${esc(m)}: у клиента нет заказов`, null, 'warn');
+      else if (list.every(o => o.manager === m)) say(`Ответственный уже ${esc(m)} — менять нечего`, null, 'muted');
+      else say(`Ответственный: ${esc(uniq(list.map(o => o.manager || '—')).join(', '))} → <b>${esc(m)}</b>`, () => {
+        for (const o of list) if (o.manager !== m) { o.manager = m; touch(o); }
+        if (cl.manager !== undefined && cl.manager !== m) { cl.manager = m; touch(cl); }
+      });
+      continue;
+    }
     switch (ch.type) {
       case 'allergen_add':
         if (!v) break;
@@ -1309,7 +1342,8 @@ function chatNewOrder(a) {
   const program = canonProgram(normProg(String(a.program || '').trim())), cb = comboOf(program);
   return {
     program, time: /веч/i.test(a.time) ? 'вечер' : 'утро', timeAt: '', courier: '',
-    persons: 0, company: '', manager: managerOf(a.manager) || managerOf(a.sender) || String(a.manager || '').trim() || operator(),
+    // ответственный — только если в сообщении прямо написано («ответственный Асиф») и он есть среди сотрудников; иначе пусто
+    persons: 0, company: '', manager: managerOf(a.manager),
     // дней не сказали — для программы по шаблону берём дни шаблона (Sirtfood — 21, «горки» — 17; «Админ» → «Программы»)
     start: isoOk(a.start) ? a.start : '', days: Math.max(0, parseInt(a.days, 10) || (cb ? stagesTotal(cb.stages) : 0)),
     weekdays: WD.map(w => (off.includes(w) ? 0 : 1)), dayMode: 'week', customDays: [],
@@ -1318,8 +1352,6 @@ function chatNewOrder(a) {
 }
 function planChatNew(a, existing) {
   const x = chatNewOrder(a), daysTpl = !(parseInt(a.days, 10) > 0) && x.days > 0;
-  // клиент уже наш — продление идёт его ответственному, а не тому, кто написал в чат
-  if (existing && !managerOf(a.manager)) x.manager = existing.manager || lastOrderOf(existing)?.manager || x.manager;
   const miss = [!String(a.name || '').trim() && 'ФИО', !existing && !String(a.phone || '').trim() && 'телефон', !x.program && 'программа',
     !x.days && 'количество дней', !x.start && 'дата 1-й готовки'].filter(Boolean);
   const rows = [
@@ -1327,7 +1359,7 @@ function planChatNew(a, existing) {
     existing ? '' : `Адрес: ${addrHtml(a.address || '—').replace(/\n/g, '<br>')}`,
     `Программа <b>${esc(progLabel(x.program) || '—')}</b>, ${x.days || '—'} дн.${daysTpl ? ' (по шаблону программы)' : ''}, 1-я готовка <b>${x.start ? fmt(dn(x.start)) : '—'}</b>, ${x.time}, дни: ${x.weekdays.every(Boolean) ? 'все, без выходных' : WD.filter((_, i) => x.weekdays[i]).join(' ')}`,
     `Аллерген / исключения: ${x.allergen ? `<b>${esc(x.allergen)}</b>` : '—'}`,
-    `Ответственный: ${esc(x.manager || '—')} · курьер не указан — назначьте в карточке`,
+    `Ответственный: ${x.manager ? esc(x.manager) : 'не указан в сообщении — назначьте в карточке'}${a.manager && !x.manager ? ` («${esc(a.manager)}» нет среди сотрудников)` : ''} · курьер не указан — назначьте в карточке`,
   ].filter(Boolean).map(t => ({ t, cls: '' }));
   if (miss.length) rows.push({ t: `Не хватает: ${miss.join(', ')} — нажмите «Нет» и заполните форму`, cls: 'warn' });
   // заказ с той же датой уже есть (например, пришёл из Excel) — второй не оформляем
@@ -1361,7 +1393,7 @@ function planChatTransfer(a) {
   add('Передача — не продажа и не продление: в статистику продаж не идёт', 'muted');
   return {
     rows, ok: !bad, src, start, time,
-    run: () => transferDays(src, n, to ? { cid: to.id } : { name: a.to_name, phone: a.to_phone, address: a.to_address }, { start, time, program: src ? '' : prog, fromName: a.from_name }),
+    run: () => transferDays(src, n, to ? { cid: to.id } : { name: a.to_name, phone: a.to_phone, address: a.to_address }, { start, time, program: src ? '' : prog, fromName: a.from_name, manager: managerOf(a.manager) }),
   };
 }
 
@@ -1381,7 +1413,7 @@ function openChatEdits() {
     }
     const cards = st.acts.map((a, i) => {
       const head = `<div class="row" style="gap:8px;align-items:baseline"><b>${esc(a.kind === 'transfer' ? `${a.from_name || '?'} → ${a.to_name || a.to_phone || '?'}` : a.name || '—')}</b>${a.sender ? `<span class="muted small">от ${esc(a.sender)}</span>` : ''}
-        <span class="tag ${a.kind === 'new' ? 'first' : a.kind === 'transfer' ? 'frozen' : 'future'}">${a.kind === 'new' ? 'новый клиент' : a.kind === 'transfer' ? 'передача дней' : 'правка'}</span></div>`;
+        <span class="tag ${a.kind === 'new' ? 'first' : a.kind === 'transfer' ? 'frozen' : 'future'}">${a.kind === 'new' ? 'новый клиент' : a.kind === 'transfer' ? 'передача дней' : 'правка'}</span>${a.kind !== 'new' && a.cid && CLIENTS.get(a.cid) && !sameName(CLIENTS.get(a.cid), a.kind === 'transfer' ? a.from_name : a.name) ? '<span class="tag" style="background:#fff3cd;color:#8a6100" title="Точного совпадения по имени нет — выбран похожий клиент">? имя не совпадает точно — проверьте клиента</span>' : ''}</div>`;
       let rows, can;
       if (a.kind === 'transfer') {
         const p = planChatTransfer(a);
@@ -1396,14 +1428,14 @@ function openChatEdits() {
       }
       const pick = a.kind === 'transfer'
         ? `<label class="small">От кого: <select class="input" data-m="cl" data-i="${i}" style="width:auto;padding:3px 8px">
-            <option value="">— не указан —</option>${a.cands.map(c => `<option value="${esc(c.id)}" ${c.id === a.cid ? 'selected' : ''}>${esc(c.name)} · ${esc(STATUS[CINFO.get(c.id).status].toLowerCase())}</option>`).join('')}</select></label>
+            <option value="">— не указан —</option>${a.cands.map(c => `<option value="${esc(c.id)}" ${c.id === a.cid ? 'selected' : ''}>${sameName(c, a.from_name) ? '' : '? '}${esc(c.name)} · ${esc(STATUS[CINFO.get(c.id).status].toLowerCase())}</option>`).join('')}</select></label>
           <label class="small" style="margin-left:10px">Кому: <select class="input" data-m="to" data-i="${i}" style="width:auto;padding:3px 8px">
             <option value="">Новый клиент</option>${a.toCands.map(c => `<option value="${esc(c.id)}" ${c.id === a.toCid ? 'selected' : ''}>${esc(c.name)} · ${esc(firstLine(c.phone || ''))}</option>`).join('')}</select></label>`
         : a.kind === 'new'
         ? (a.cands.length ? `<label class="small">Это существующий клиент? <select class="input" data-m="cl" data-i="${i}" style="width:auto;padding:3px 8px">
             <option value="">Нет — новый клиент</option>${a.cands.map(c => `<option value="${esc(c.id)}" ${c.id === a.cid ? 'selected' : ''}>${esc(c.name)} · ${esc(c.phone || '')}</option>`).join('')}</select></label>` : '')
         : `<label class="small">Клиент: <select class="input" data-m="cl" data-i="${i}" style="width:auto;padding:3px 8px">
-            <option value="">— не найден —</option>${a.cands.map(c => `<option value="${esc(c.id)}" ${c.id === a.cid ? 'selected' : ''}>${esc(c.name)} · ${esc(STATUS[CINFO.get(c.id).status].toLowerCase())}${c.phone ? ' · ' + esc(firstLine(c.phone)) : ''}</option>`).join('')}</select></label>`;
+            <option value="">— не найден —</option>${a.cands.map(c => `<option value="${esc(c.id)}" ${c.id === a.cid ? 'selected' : ''}>${sameName(c, a.name) ? '' : '? '}${esc(c.name)} · ${esc(STATUS[CINFO.get(c.id).status].toLowerCase())}${c.phone ? ' · ' + esc(firstLine(c.phone)) : ''}</option>`).join('')}</select></label>`;
       const foot = a.status === 'done' ? '<span class="tag first">✓ применено</span>'
         : a.status === 'skip' ? '<span class="tag off">не применено — открыта карточка</span>'
           : `<span class="muted">Применять правки?</span> <button class="btn btn-sm btn-green" data-m="yes" data-i="${i}" ${can ? '' : 'disabled'}>Да</button>
@@ -1510,22 +1542,23 @@ function openChatEdits() {
   • "time" {value}: «утро» или «вечер».
   • "program" {value, from}: ТОЛЬКО если прямо просят сменить программу или калораж («перевести на 1500», «сменить на Sirtfood»); value — калорийность числом или название; from — дата или null. Слова о программе рядом с именем («белковый рацион», «стандарт») — НЕ смена программы.
   • "days_add" {value}: добавить (или убрать, с минусом) дни.
+  • "manager" {value}: смена ответственного — под именем клиента написано «Ответственный Асиф», «отв. Алина»; value — имя сотрудника. Это НЕ аллерген и НЕ пожелание.
   • "phone" {value}, "address" {value}, "comment" {text}: новые контакты и заметки о клиенте.
   • "other" {text}: другая просьба — коротко, что просят.
 - Новый клиент (в сообщении программа или калораж, количество дней, дата, телефон, адрес) — kind "new":
   phone — как написано; address — все строки про место (адрес, ориентир, ссылка на карту, КПП, подъезд, организация) как написано, через \\n;
   program — калорийность числом («Стандарт 1800 ккал» → "1800") или название программы; days — число; start — дата 1-й готовки (дата в сообщении);
   time — «утро» или «вечер»; days_off — выходные дни списком из ["ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС"] ([] если «выходные нет»);
-  allergen — аллергены, исключения, замены блюд как написано; manager — ответственный, если указан.
+  allergen — аллергены, исключения, замены блюд как написано; manager — ТОЛЬКО если в сообщении прямо написано, кто ответственный («ответственный Асиф», «отв.: Алина»), иначе пусто (автор сообщения — не ответственный).
   Оплату и суммы («к оплате») не бери.
 - Передача дней — клиент отдаёт свои оставшиеся дни другому человеку («передача дней», «передать дни», «переводим дни с … на …», «дни Иванова отдаём Петрову», «переданные дни», «от кого: … кому: …») — kind "transfer", НЕ "new" и НЕ "edit", даже если у получателя есть телефон, адрес и программа:
   from_name — у кого забрать дни (пусто, если не сказано); to_name, to_phone, to_address — кому (как у нового клиента); days — сколько дней передают;
-  start — с какой даты готовить получателю; time — «утро» или «вечер»; program — программа, если указана.
+  start — с какой даты готовить получателю; time — «утро» или «вечер»; program — программа, если указана; manager — только если прямо написано «ответственный …», иначе пусто.
 Сообщения:
 """
 ${st.text.trim()}
 """
-Ответь только JSON: {"actions":[{"kind":"edit","name":"","sender":"","changes":[{"type":"allergen_add","text":""}]},{"kind":"new","name":"","sender":"","phone":"","address":"","program":"","days":0,"start":"","time":"утро","days_off":[],"allergen":"","manager":""},{"kind":"transfer","sender":"","from_name":"","to_name":"","to_phone":"","to_address":"","days":0,"start":"","time":"утро","program":""}],"notes":"что не понял, коротко, или пусто"}`;
+Ответь только JSON: {"actions":[{"kind":"edit","name":"","sender":"","changes":[{"type":"allergen_add","text":""}]},{"kind":"new","name":"","sender":"","phone":"","address":"","program":"","days":0,"start":"","time":"утро","days_off":[],"allergen":"","manager":""},{"kind":"transfer","sender":"","from_name":"","to_name":"","to_phone":"","to_address":"","days":0,"start":"","time":"утро","program":"","manager":""}],"notes":"что не понял, коротко, или пусто"}`;
       try {
         const res = await api('POST', '/api/ai/generate', JSON.stringify({ prompt }));
         const j0 = JSON.parse(String(res.text).replace(/^```(?:json)?|```$/gm, '').trim());
@@ -1541,18 +1574,21 @@ ${st.text.trim()}
         st.acts = (Array.isArray(j.actions) ? j.actions : []).filter(a => a && (a.name || a.phone || a.to_name || a.to_phone)).map(a => {
           if (a.kind === 'transfer') {
             a.sender = senderOf(a.to_name || a.from_name);
-            const cands = String(a.from_name || '').trim() ? findClientsByName(a.from_name, '').slice(0, 6) : [];
+            let cands = String(a.from_name || '').trim() ? findClientsByName(a.from_name, '').slice(0, 6) : [], approx = false;
+            if (!cands.length && String(a.from_name || '').trim()) { cands = findClientsApprox(a.from_name); approx = cands.length > 0; }
             const toCands = findClientsByName(a.to_name, a.to_phone).slice(0, 6);
             const same = c => (phoneKey(a.to_phone) && phoneKey(c.phone) === phoneKey(a.to_phone)) || soundKey(c.name) === soundKey(a.to_name);
-            return { ...a, kind: 'transfer', cands, cid: cands[0]?.id || '', toCands, toCid: toCands.find(same)?.id || '', status: '' };
+            return { ...a, kind: 'transfer', cands, approx, cid: cands[0]?.id || '', toCands, toCid: toCands.find(same)?.id || '', status: '' };
           }
           a.sender = senderOf(a.name);
           const kind = a.kind === 'new' ? 'new' : 'edit';
-          const cands = findClientsByName(a.name, kind === 'new' ? a.phone : '').slice(0, 6);
+          let cands = findClientsByName(a.name, kind === 'new' ? a.phone : '').slice(0, 6), approx = false;
+          // правка: по имени никого — ищем похожих, но в окне они с «?» (проверить, тот ли клиент)
+          if (kind === 'edit' && !cands.length) { cands = findClientsApprox(a.name); approx = cands.length > 0; }
           // новый: «уже есть» только при совпадении телефона или полного ФИО; правка: лучший кандидат
           const same = c => (phoneKey(a.phone) && phoneKey(c.phone) === phoneKey(a.phone)) || soundKey(c.name) === soundKey(a.name);
           const cid = kind === 'new' ? (cands.find(same)?.id || '') : (cands[0]?.id || '');
-          return { ...a, kind, cands, cid, status: '' };
+          return { ...a, kind, cands, approx, cid, status: '' };
         });
         st.notes = String(j.notes || '').trim();
         redraw();
@@ -1575,6 +1611,8 @@ function openChatNewForm(a) {
   set('phone', String(a.phone || '').trim());
   set('address', String(a.address || '').trim());
   set('start', x.start);
+  const man = root.querySelector('[name="manager"]');
+  if (man) man.value = x.manager; // ответственный — только если он прямо назван в сообщении
 }
 
 /* ---------------------------------------------------------------- форма заказа */
@@ -2147,6 +2185,8 @@ function shiftRulesText(o) {
 // Замороженные дни не сгорают: дата окончания сдвигается вперёд.
 function openFreeze(o, mode = 'range') {
   const cl = CLIENTS.get(o.clientId);
+  const onlyShifts = !can('clients.edit'); // старший курьер: только смены доставки, заморозки ему не меняем
+  if (onlyShifts) mode = 'shifts';
   const orig = calc(o);
   const st = {
     mode, anchor: null, hover: null,
@@ -2217,11 +2257,11 @@ function openFreeze(o, mode = 'range') {
       : 'Нажимайте на отдельные дни: обычный день → заморозить, голубой → разморозить.';
     $('#calBox', root).innerHTML = `
       <div class="row" style="justify-content:space-between">
-        <div class="chips">
+        ${onlyShifts ? '<b>Смены доставки</b>' : `<div class="chips">
           <button class="${st.mode === 'range' ? 'on' : ''}" data-cm="mode" data-v="range">Период: от и до</button>
           <button class="${st.mode === 'days' ? 'on' : ''}" data-cm="mode" data-v="days">Отдельные дни</button>
           <button class="${st.mode === 'shifts' ? 'on' : ''}" data-cm="mode" data-v="shifts">Настроить смены доставки</button>
-        </div>
+        </div>`}
         <div class="row">
           <button class="btn btn-icon" data-cm="month" data-v="-1">‹</button>
           <button class="btn btn-sm" data-cm="month" data-v="0">Сегодня</button>
@@ -2235,17 +2275,17 @@ function openFreeze(o, mode = 'range') {
         <span><i class="lg wo"></i>нет доставки по дню недели</span><span><i class="lg end"></i>последний день</span><span><i class="lg today"></i>сегодня</span></div>
       <div class="preview mt">${Object.keys(st.dayTimes).length ? `Дней со своими сменами: <b>${Object.keys(st.dayTimes).length}</b> · пакетов по заказу: <b>${o.days}</b> · ` : ''}Заморожено дней: <b>${frozenDays}</b>${st.skips.length ? ` · разовых пропусков: <b>${st.skips.length}</b>` : ''} ·
         окончание: <b>${fmt(pend.end)}</b>${pend.end !== orig.end ? ` <span class="muted">(было ${fmt(orig.end)})</span>` : ''}</div>
-      ${rs.length || st.skips.length ? `<div class="row mt">${rs.map(([a, b], i) => `<span class="tag frozen">${fmtS(a)}${a !== b ? '–' + fmtS(b) : ''}
+      ${onlyShifts ? '' : `${rs.length || st.skips.length ? `<div class="row mt">${rs.map(([a, b], i) => `<span class="tag frozen">${fmtS(a)}${a !== b ? '–' + fmtS(b) : ''}
           <a data-cm="delRange" data-i="${i}" title="Снять">✕</a></span>`).join('')}
         ${st.skips.map(s => `<span class="tag">пропуск ${fmtS(dn(s))} <a data-cm="delSkip" data-v="${esc(s)}">✕</a></span>`).join('')}</div>` : ''}
       <div class="row mt">
         ${nowFz ? '<button class="btn btn-sm btn-green" data-cm="unfreeze">Разморозить с завтра</button>' : ''}
         ${rs.some(([, b]) => b > TODAY) ? '<button class="btn btn-sm" data-cm="clearFuture">Снять все будущие заморозки</button>' : ''}
-      </div>`;
+      </div>`}`;
   };
   openModal({
     wide: true,
-    title: 'Заморозка и смены — ' + (cl ? cl.name : ''),
+    title: (onlyShifts ? 'Смены доставки — ' : 'Заморозка и смены — ') + (cl ? cl.name : ''),
     badge: `<span class="tag">${esc(progLabel(o.program))} · ${o.days} дн. · ${esc(orderDaysText(o))}</span>`,
     body: '<div id="calBox"></div>',
     foot: `<button class="btn" data-act="closeModal">Отмена</button><button class="btn btn-green" data-cm="save">Сохранить</button>`,
@@ -2301,6 +2341,7 @@ function openFreeze(o, mode = 'range') {
         const b = e.target.closest('[data-cm]');
         if (!b) return;
         const cm = b.dataset.cm;
+        if (onlyShifts && ['mode', 'delRange', 'delSkip', 'unfreeze', 'clearFuture'].includes(cm)) return;
         if (cm === 'mode') { st.mode = b.dataset.v; st.anchor = null; st.hover = null; }
         else if (cm === 'paint') st.paint = b.dataset.v;
         else if (cm === 'cancel') { st.anchor = null; st.hover = null; }
@@ -2653,23 +2694,27 @@ function migrate() {
     db.meta.launchAt = [String(db.meta.legacyAt).slice(0, 10), '2026-11-16'].sort()[0];
     changed = true;
   }
-  if (!db.meta.mig.return2027) {
-    // в старой базе «возвраты» были заморозками до 2028–2031 года → оформляем как «Возврат»
-    ensureReturnTag();
-    const byId = new Map(db.clients.map(c => [c.id, c]));
+  // Автоматическое «заморозка дольше апреля 2027 → Возврат» убрано: при слиянии баз отметка о нём терялась, и оно срабатывало заново
+  // (23.11 — 288 заказов). Возвратников офис отмечает сам: «Клиенты» → «Найти возвратников» (такой возврат помечен stoppedAt).
+  if (!db.meta.mig.unreturn1123) {
+    // все возвраты, сделанные автоматически (без stoppedAt), — снова бессрочная заморозка со следующего дня после остановки
     let n = 0;
+    const touched = new Set();
     for (const o of db.orders) {
-      const f = o.freezes.find(x => x.to > '2027-04-30');
-      if (!f || o.stopped) continue;
-      o.stopped = isoOf(Math.max(dn(f.from) - 1, dn(o.start) - 1));
-      o.freezes = o.freezes.filter(x => x !== f);
+      if (!o.stopped || o.stoppedAt) continue;
+      const cl = CLIENTS.get(o.clientId) || db.clients.find(c => c.id === o.clientId);
+      if (!cl || !(cl.tags || []).includes('t_return')) continue;
+      const from = dn(o.stopped) + 1;
+      o.freezes = normFreezes([...o.freezes, { from: isoOf(from), to: isoOf(from + INDEF_DAYS) }]);
+      o.stopped = null;
       touch(o);
-      const cl = byId.get(o.clientId);
-      if (cl && !cl.tags.includes('t_return')) { cl.tags.push('t_return'); touch(cl); }
+      touched.add(cl);
       n++;
     }
-    db.meta.mig.return2027 = localIso();
-    if (n) addLog(`Возврат: ${n} заказов, замороженных дольше апреля 2027, остановлены и помечены «Возврат»`, 'stop');
+    // пометку «Возврат» снимаем, если у клиента не осталось остановленных заказов
+    for (const cl of touched) if (!db.orders.some(o => o.clientId === cl.id && o.stopped)) { cl.tags = cl.tags.filter(t => t !== 't_return'); touch(cl); }
+    db.meta.mig.unreturn1123 = localIso();
+    if (n) addLog(`Отмена «Возврат»: ${n} заказов снова заморожены на неопределённый срок (${touched.size} клиентов) — возвратников отметим через «Найти возвратников»`, 'stop');
     changed = true;
   }
   if (!db.meta.mig.dupLegacy1117) {
@@ -2952,10 +2997,11 @@ async function courierXlsx(d, t) {
   if (!names.length) { toast('На эту смену доставок нет', 'bad'); return; }
   const fname = courierBaseName(d, t);
   // вид как в старой базе: строка калоража голубая на всю ширину, сетка, курьер и телефон подсвечены
-  const COLS = BASE_COLS.slice(2); // без «№» и «Курьер»: курьер — в названии листа и в строке смены
+  // без «№» и «Курьер»: курьер — в названии листа и в строке смены; слева пустой столбец-отступ — под ним клиенты, на нём строка калоража
+  const COLS = ['', ...BASE_COLS.slice(2)];
   const N = COLS.length, last = [[0, N - 1]];
   const line = (text, st) => ({ cells: [text, ...Array(N - 1).fill('')], st: Object.fromEntries(COLS.map((_, k) => [k, st])), merge: last });
-  const cellSt = { 0: 'cell', 1: 'cellb', 2: 'cell', 3: 'cell', 4: 'cell', 5: 'cell' };
+  const cellSt = { 0: 'cell', 1: 'cell', 2: 'cellb', 3: 'cell', 4: 'cell', 5: 'cell', 6: 'cell' };
   const sheet = name => {
     const rows = [{ cells: COLS, st: Object.fromEntries(COLS.map((_, k) => [k, 'hdr'])) }];
     for (const [day, t, m] of shifts) {
@@ -2965,12 +3011,17 @@ async function courierXlsx(d, t) {
       let i = 0;
       for (const [prog, l] of byProg(list)) {
         rows.push(line(`${String(prog).replace(/\s*ккал$/i, '')} — ${l.length}`, 'pgroup'));
-        for (const r of l) { const v = baseRow(r, i++); v[3] = phoneXl(r.cl.phone); v[5] = r.o.timeAt || r.o.time; rows.push({ cells: v.slice(2), st: cellSt }); }
+        for (const r of l) { const v = baseRow(r, i++); v[3] = phoneXl(r.cl.phone); v[5] = r.o.timeAt || r.o.time; rows.push({ cells: ['', ...v.slice(2)], st: cellSt }); }
       }
     }
-    return { name, widths: [26, 17, 60, 8, 12, 40], rows, fit: true };
+    return { name, widths: [9, 26, 17, 60, 8, 12, 40], rows, fit: true };
   };
   try {
+    if (window.EHAndroid) { // телефон и сайт-версия: книга собирается здесь же и отдаётся через «Поделиться» / скачивание
+      const how = await deliverFile(fname + '.xlsx', xlsxBlob(names.map(sheet)));
+      if (how !== 'cancel') toast(how === 'download' ? 'Excel скачан: ' + fname : 'Excel готов: ' + fname, 'ok', 5000);
+      return;
+    }
     const p = await exportFile('xlsx', fname, { sheets: names.map(sheet) });
     await api('POST', '/api/open-folder', JSON.stringify({ path: p }));
     toast('Excel готов: ' + fname, 'ok', 5000);
@@ -2980,7 +3031,8 @@ async function courierXlsx(d, t) {
 async function courierPngOne(d, t, groups) {
   const [cname, all] = groups[0];
   const F = '"Montserrat", "Segoe UI", Arial, sans-serif';
-  const COLW = [30, 90, 170, 105, 330, 60, 95, 280], PAD = 5, LH = 15;
+  // первый столбец — пустой отступ, как в Excel «База курьеров»: на нём строка калоража, клиенты — правее, без нумерации
+  const COLW = [40, 90, 170, 105, 330, 60, 95, 280], PAD = 5, LH = 15;
   const W = COLW.reduce((a, b) => a + b, 0) + 40, sc = 2;
   const mg = document.createElement('canvas').getContext('2d');
   const CF = `400 12px ${F}`;
@@ -3001,6 +3053,7 @@ async function courierPngOne(d, t, groups) {
   let n = 0;
   const lay = progs.map(([prog, l]) => [prog, l.map(r => {
     const v = baseRow(r, n++);
+    v[0] = '';
     v[3] = phoneShort(r.cl.phone);
     v[4] = String(r.cl.address || '').replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim();
     const cells = v.map((x, k) => wrap(x, COLW[k] - PAD * 2));
@@ -3023,7 +3076,7 @@ async function courierPngOne(d, t, groups) {
   const grid = (y, h) => { g.strokeStyle = '#9a9d98'; g.lineWidth = 1; g.strokeRect(20, y, W - 40, h); for (const x of X.slice(1, -1)) { g.beginPath(); g.moveTo(x, y); g.lineTo(x, y + h); g.stroke(); } };
   let y = HEAD;
   g.fillStyle = '#e4efdc'; g.fillRect(20, y, W - 40, TH);
-  BASE_COLS.forEach((h, k) => text(h, X[k] + PAD, y + 17, `700 11.5px ${F}`, '#1d1d1b'));
+  BASE_COLS.forEach((h, k) => text(k ? h : '', X[k] + PAD, y + 17, `700 11.5px ${F}`, '#1d1d1b'));
   grid(y, TH);
   y += TH;
   for (const [prog, l] of lay) {
@@ -3907,6 +3960,8 @@ function menuCardHtml(f, D, { variant = '', name = '', program = '', dishes = {}
   const DAYS = { 'вчера': -1, 'сегодня': 0, 'дата': 0, 'завтра': 1 };
   const info = f.info ? f.info.replace(/\{\s*(вчера|сегодня|дата|завтра)\s*\}/gi, (_, w) => ddmmyyyy(D + DAYS[w.toLowerCase()])) : '';
   const factor = kbju && isNumProg(program) ? +program / KBJU_BASE : null;
+  // напиток в приёме считается в КБЖУ — подписываем: «Комплимент + 200 мл компота: Ккал-…»
+  const dvs = factor ? (menuVariant(D, f.id, variant, false).dv || {})[String(program)] || {} : {};
   const meals = list.map(m => {
     const text = String(dishes[m.id] || '').trim();
     if (!text) return '';
@@ -3915,7 +3970,7 @@ function menuCardHtml(f, D, { variant = '', name = '', program = '', dishes = {}
       : abs && abs[m.id] && abs[m.id].some(v => +v) ? abs[m.id].map(v => +v || 0) : null;
     return `<div class="mc-meal"><div class="mc-mh">${esc(m.name.toUpperCase())}${m.time ? ' ' + esc(m.time) : ''}</div>
       ${text.split('\n').map(l => `<div class="mc-d">${esc(l)}</div>`).join('')}
-      ${k ? `<div class="mc-k">Ккал-${num1(k[0])} Б-${num1(k[1])} Ж-${num1(k[2])} У-${num1(k[3])}</div>` : ''}</div>`;
+      ${k ? `<div class="mc-k">${dvs[m.id] ? `${esc(m.name)} + ${dvs[m.id][0]} мл ${esc(dvs[m.id][1])}: ` : ''}Ккал-${num1(k[0])} Б-${num1(k[1])} Ж-${num1(k[2])} У-${num1(k[3])}</div>` : ''}</div>`;
   }).join('');
   // в левом углу вместо № пакета — дата готовки, срок и температура хранения (текст формата); сзади бледный листочек
   return `<div class="menu-card">
@@ -3971,7 +4026,7 @@ function viewMenu() {
     return `<div class="mi"><div class="mi-h">${esc(m.name)}${m.time ? ` <span class="muted">${esc(m.time)}</span>` : ''}</div>
       <textarea class="input" rows="2" placeholder="${esc(f.perClient && mainDish(D, m.name, f) ? 'Как в основном: ' + mainDish(D, m.name, f).replace(/\n/g, ', ') : 'Блюдо (каждое с новой строки)')}" data-bind="mdish" data-f="${esc(f.id)}" data-v="${esc(variant)}" data-m="${esc(m.id)}">${esc(md.d[m.id] || '')}</textarea>
       ${showRec() ? `<textarea class="input" rows="1" style="margin-top:4px;font-size:12px" placeholder="Граммовка для ИИ (не печатается): плов 250 г — рис 100 г, говядина 80 г, морковь 50 г…" data-bind="mrec" data-f="${esc(f.id)}" data-v="${esc(variant)}" data-m="${esc(m.id)}">${esc(mealRec(md, m.id))}</textarea>` : ''}
-      ${true ? `<div class="mi-k"><span class="muted small">${f.kbju ? `КБЖУ на ${KBJU_BASE} ккал` : f.perClient ? 'КБЖУ для всех' : 'КБЖУ'}${md.g && md.g[m.id] ? ` (≈ ${md.g[m.id]} г)` : ''}:</span>
+      ${true ? `<div class="mi-k"><span class="muted small">${f.kbju ? `КБЖУ на ${KBJU_BASE} ккал` : f.perClient ? 'КБЖУ для всех' : 'КБЖУ'}${md.g && md.g[m.id] ? ` (≈ ${md.g[m.id]} г${((md.dv || {})[KBJU_BASE] || {})[m.id] ? ` + ${md.dv[KBJU_BASE][m.id][0]} мл ${esc(md.dv[KBJU_BASE][m.id][1])}` : ''})` : ''}:</span>
         ${['Ккал', 'Б', 'Ж', 'У'].map((l, i) => `<label>${l}<input class="input" type="number" step="0.1" data-bind="mkbju" data-f="${esc(f.id)}" data-v="${esc(variant)}" data-m="${esc(m.id)}" data-i="${i}" value="${esc(k[i] ?? '')}"></label>`).join('')}</div>` : ''}
     </div>`;
   }).join('');
@@ -4152,11 +4207,6 @@ const svgCat = (x, y, k, c, d) => `<g transform="translate(${x} ${y}) scale(${k}
   <ellipse cx="15" cy="47" rx="4.2" ry="2.6" fill="${d}"/><ellipse cx="25" cy="47" rx="4.2" ry="2.6" fill="${d}"/></g>`;
 const svgPaw = (x, y, k, c, rot = 0) => `<g transform="translate(${x} ${y}) rotate(${rot}) scale(${k})" fill="${c}"><ellipse cx="0" cy="3" rx="4" ry="3.2"/>`
   + '<circle cx="-4" cy="-2.5" r="1.6"/><circle cx="-1.4" cy="-4.6" r="1.6"/><circle cx="1.4" cy="-4.6" r="1.6"/><circle cx="4" cy="-2.5" r="1.6"/></g>';
-const uzFlagInner = () => '<rect width="60" height="30" fill="#1eb53a"/><rect width="60" height="20.4" fill="#ce1126"/><rect width="60" height="19.6" fill="#fff"/>'
-  + '<rect width="60" height="10.4" fill="#ce1126"/><rect width="60" height="9.6" fill="#0099b5"/>'
-  + svgMoon(6.2, 4.8, 3.6, '#fff', '#0099b5')
-  + [[2.3, 3], [5, 4], [7.7, 5]].flatMap(([y, n]) => Array.from({ length: n }, (_, i) => svgStar(20.6 - (n - 1 - i) * 2.6, y, 0.85, '#fff', 0.4))).join('');
-const UZ_FLAG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 30">${uzFlagInner()}</svg>`;
 const svgTulip = (x, y, k, c) => `<g transform="translate(${x} ${y}) scale(${k})"><path d="M9 4 V24" stroke="#43a047" stroke-width="1.6"/>`
   + '<path d="M9 16 C4 11 1 13 0 18 C4 18 7 18 9 16Z" fill="#66bb6a"/>'
   + `<path d="M0 0 C-1 -6 3 -10 6 -7 C7 -11 11 -11 12 -7 C15 -10 19 -6 18 0 C17 6 1 6 0 0Z" fill="${c}"/></g>`;
@@ -4275,7 +4325,7 @@ const PREVIEW_CSS = `@media screen { html, body { background: #e9eae6 !important
 const PRINT_BASE_CSS = `@page { size: A4 portrait; margin: 8mm; }
   html, body { background: #fff !important; margin: 0; font-family: "Segoe UI", Arial, sans-serif; }
   .no-print, .sidebar { display: none !important; }`;
-async function printDialog({ title, info, html, css, sheets, scale, paper }) {
+async function printDialog({ title, info, html, css, sheets, scale, paper, onPreview }) {
   const pr = await printerInfo();
   const sides = pr.quick && !window.EHAndroid; // в окне печати браузера и телефона стороны выбираются там
   return openModal({
@@ -4304,6 +4354,7 @@ async function printDialog({ title, info, html, css, sheets, scale, paper }) {
         d.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><link rel="stylesheet" href="styles.css">
           <style>${PRINT_BASE_CSS}${cssOf()}${PREVIEW_CSS}</style></head><body class="printdoc">${h}</body></html>`);
         d.close();
+        if (onPreview) onPreview(d, root); // например, клик по бирке в предпросмотре
         setTimeout(() => {
           try {
             fitMenuCards(d);
@@ -4382,25 +4433,17 @@ function printMenuCards(cards) {
 /* ---------------------------------------------------------------- бирки на пакеты: 24 на листе A4 (3×8), под резак */
 const LABEL_PER = 12; // 2 × 6 на листе A4; с QR-кодом меню — 2 × 5, чтобы QR был крупным и читался
 const labelPer = qr => (qr ? 10 : LABEL_PER);
-// оформление бирок: времена года и праздники
-const LABEL_THEMES = [
-  ['', 'Обычный'],
-  ['summer', 'Летний', '#fffbe6', '#f5b301', '#e67e00', ['☀️', '🍉', '🍋']],
-  ['autumn', 'Осенний', '#fff4ea', '#d35400', '#a04000', ['🍁', '🍂', '🍁']],
-  ['winter', 'Зимний', '#eef7ff', '#5dade2', '#2e86c1', ['❄️', '⛄', '❄️']],
-  ['spring', 'Весенний', '#fdf2f8', '#f48fb1', '#4f9631', ['🌸', '🌷', '🌱']],
-  ['navruz', 'Навруз', '#f3fbe9', '#43a047', '#c62828', ['🌷', '🌾', '🌷'], 'Navro‘z muborak!'],
-  ['ramadan', 'Рамадан', '#f5f2e6', '#1b5e20', '#b8860b', ['🌙', '✨', '⭐'], 'Рамадан мубарак!'],
-  ['newyear', 'Новый год', '#fff5f5', '#c0392b', '#1e8449', ['🎄', '🎁', '❄️'], 'С Новым годом!'],
-  ['halloween', 'Хеллоуин', '#fff3e0', '#e67e22', '#4a235a', ['🎃', '🦇', '👻'], 'Happy Halloween!'],
-  ['easter', 'Пасха', '#f7f3ff', '#b39ddb', '#7cb342', ['🥚', '🐣', '🌷'], 'Светлой Пасхи!'],
-  ['kz', 'День независимости Казахстана', '#e6f8fb', '#00afca', '#c99700', ['☀️', '🦅', '⭐'], 'Тәуелсіздік күнімен!'],
-  ['uz', 'День независимости Узбекистана', '#ffffff', '#0099b5', '#1eb53a', ['🌙', '⭐', '🕊️'], 'Mustaqillik kuni muborak!'],
-  ['valentine', 'День влюблённых', '#fff0f4', '#e91e63', '#ad1457', ['❤️', '🌹', '💌'], 'С Днём влюблённых!'],
-  ['march8', '8 Марта', '#fff3f7', '#e91e63', '#ad1457', ['🌷', '💐', '🌷'], 'С 8 Марта!'],
-  ['cats', 'Милые котики', '#fff7ee', '#f4a261', '#c2703d', ['🐱', '🐾', '😺']],
-];
-const labelTheme = () => db.settings.labelTheme || '';
+// оформление бирок — как у карточек меню: цвет фона и картинка в углу (без смайликов и надписей)
+// [ключ, фон бирки, цвет «Приятного аппетита!», насыщенность картинки]
+const LABEL_LOOK = {
+  leaf: ['#f4faef', '#4f9631', .3], fir: ['#eef6f1', '#2e7d32', .3], autumn: ['#fff5ec', '#d35400', .3], spring: ['#fdf3f8', '#d81b60', .3],
+  summer: ['#fffbea', '#e67e00', .3], newyear: ['#f3f8fd', '#c0392b', .3], valentine: ['#fff0f4', '#e91e63', .4], easter: ['#f7f3ff', '#7e57c2', .3],
+  ramadan: ['#f5f2e6', '#1b5e20', .4], uz: ['#ffffff', '#0099b5', .6], kz: ['#e6f8fb', '#00afca', .3], march8: ['#fff3f7', '#e91e63', .5], cats: ['#fff7ee', '#c2703d', .45],
+};
+const LABEL_THEMES = [['', 'Без фона'], ...MENU_THEMES.filter(([k]) => LABEL_LOOK[k])];
+// прежние дизайны бирок, которых теперь нет, — на похожий
+const LABEL_OLD = { winter: 'fir', navruz: 'spring', halloween: 'autumn' };
+const labelTheme = () => { const v = db.settings.labelTheme || ''; return LABEL_LOOK[v] ? v : LABEL_OLD[v] || ''; };
 const themeSelect = () => `<label class="field"><span>Дизайн бирок</span><select class="input" name="lth">
   ${LABEL_THEMES.map(([k, n]) => `<option value="${k}" ${labelTheme() === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`;
 // выбранный в окне печати дизайн запоминается для следующих раз
@@ -4419,19 +4462,8 @@ function pickTheme(root) {
   }
   return v;
 }
-// флаг Казахстана для бирок (эмодзи-флаги Windows не рисует)
-const KZ_FLAG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 30"><rect width="60" height="30" fill="#00AFCA"/><path d="M5 1l1.5 1.5-1.5 1.5-1.5-1.5zM5 5l1.5 1.5-1.5 1.5-1.5-1.5zM5 9l1.5 1.5-1.5 1.5-1.5-1.5zM5 13l1.5 1.5-1.5 1.5-1.5-1.5zM5 17l1.5 1.5-1.5 1.5-1.5-1.5zM5 21l1.5 1.5-1.5 1.5-1.5-1.5zM5 25l1.5 1.5-1.5 1.5-1.5-1.5z" fill="#FEC50C"/><circle cx="32" cy="12" r="5" fill="#FEC50C"/><g stroke="#FEC50C" stroke-width="1.1" stroke-linecap="round"><path d="M38.30 12.00L40.60 12.00"/><path d="M37.82 14.41L39.95 15.29"/><path d="M36.45 16.45L38.08 18.08"/><path d="M34.41 17.82L35.29 19.95"/><path d="M32.00 18.30L32.00 20.60"/><path d="M29.59 17.82L28.71 19.95"/><path d="M27.55 16.45L25.92 18.08"/><path d="M26.18 14.41L24.05 15.29"/><path d="M25.70 12.00L23.40 12.00"/><path d="M26.18 9.59L24.05 8.71"/><path d="M27.55 7.55L25.92 5.92"/><path d="M29.59 6.18L28.71 4.05"/><path d="M32.00 5.70L32.00 3.40"/><path d="M34.41 6.18L35.29 4.05"/><path d="M36.45 7.55L38.08 5.92"/><path d="M37.82 9.59L39.95 8.71"/></g><path d="M19 22Q25.5 17.5 32 21Q38.5 17.5 45 22Q38.5 20.8 32 24.2Q25.5 20.8 19 22Z" fill="#FEC50C"/></svg>';
-const LABEL_THEME_CSS = LABEL_THEMES.filter(t => t[0]).map(([k, , bg, fr, ac, ic]) => `
-  .th-${k} .lbl { background: ${bg}; } .lsheet.th-${k} .lbl::before { border-color: ${fr}; } .th-${k} .lb-foot, .th-${k} .lb-greet { color: ${ac}; }
-  .th-${k} .lb-c1::before { content: "${ic[0]}"; } .th-${k} .lb-c2::before { content: "${ic[1]}"; } .th-${k} .lb-c3::before { content: "${ic[2]}"; }`).join('')
-  + `.th-uz .lbl { background: linear-gradient(#0099b5 0 1.6mm, #ce1126 1.6mm 2mm, #fff 2mm calc(100% - 2mm), #ce1126 calc(100% - 2mm) calc(100% - 1.6mm), #1eb53a calc(100% - 1.6mm)); }
-  .lsheet.th-kz .lbl::before { border-style: double; border-width: 1mm; }
-  .lsheet.th-kz .lb-c1::before, .lsheet.th-kz .lb-c3::before { content: ""; display: block; width: 10mm; height: 5mm;
-    background: url("data:image/svg+xml,${encodeURIComponent(KZ_FLAG)}") center / contain no-repeat; box-shadow: 0 0 0 .2mm #7fcfdd; }
-  .lsheet.th-kz .lb-c2::before { content: ""; }
-  .lsheet.th-uz .lb-c1::before, .lsheet.th-uz .lb-c3::before { content: ""; display: block; width: 10mm; height: 5mm;
-    background: url("data:image/svg+xml,${encodeURIComponent(UZ_FLAG)}") center / contain no-repeat; box-shadow: 0 0 0 .2mm #b7d7df; }
-  .lsheet.th-uz .lb-c2::before { content: ""; }`;
+const LABEL_THEME_CSS = Object.entries(LABEL_LOOK).map(([k, [bg, ac, op]]) =>
+  `.th-${k} .lbl { background: ${bg}; } .th-${k} .lb-foot { color: ${ac}; } .th-${k} .lb-art { opacity: ${op}; }`).join('\n');
 // бирки — на весь лист A4 без полей: края листа и есть край бирок, режутся только линии между ними
 const LABEL_CSS = `@page { size: A4 portrait; margin: 0; }
   .lsheet { width: 210mm; height: 297mm; display: grid; grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(6, 1fr);
@@ -4445,8 +4477,6 @@ const LABEL_CSS = `@page { size: A4 portrait; margin: 0; }
     text-align: center; gap: .5mm;
     -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .lsheet *, .lsheet *::before, .lsheet *::after { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .lsheet[class*="th-"] .lbl::before { content: ""; position: absolute; inset: 1.4mm; border: .5mm solid transparent; border-radius: 2.5mm; pointer-events: none; }
-  .lsheet.th- .lbl::before { display: none; }
   .lb-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; text-align: center; gap: .7mm; }
   .lb-logo { font-weight: 700; font-size: 14pt; letter-spacing: -.3px; line-height: 1; display: inline-flex; align-items: baseline; margin-top: 1.6mm; }
   .lbl > * { flex-shrink: 0; }
@@ -4454,17 +4484,15 @@ const LABEL_CSS = `@page { size: A4 portrait; margin: 0; }
   .lb-logo .leaf-e svg { position: absolute; width: 3.2mm; height: 3.2mm; left: 50%; top: -2.2mm; margin-left: -1mm; }
   .lb-name { font-size: 13pt; font-weight: 700; line-height: 1.12; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .lb-prog { font-size: 10.5pt; font-weight: 500; color: #333; }
-  .lb-greet { font-size: 8pt; font-weight: 700; }
-  .lb-prog + .lb-greet, .lb-prog + .lb-foot { margin-top: 3.5mm; } /* без QR — отступ между программой и пожеланием */
+  .lb-prog + .lb-foot { margin-top: 3.5mm; } /* без QR — отступ между программой и пожеланием */
   .lb-foot { font-size: 10pt; color: #5da83c; font-weight: 600; }
-  .lb-foot .lb-greet { font-size: inherit; }
   .lb-qr { width: 29mm; height: 29mm; margin: .6mm 0; flex: none; display: flex; align-items: center; justify-content: center; position: relative; z-index: 1; }
   .lb-qr svg { width: 29mm; height: 29mm; display: block; }
   .lb-qr-empty { width: 27mm; height: 27mm; border: .3mm dashed #aaa; border-radius: 1mm; display: flex; align-items: center; justify-content: center;
     font-size: 7pt; font-weight: 700; color: #aaa; background: #fff; }
-  .lb-c1, .lb-c2, .lb-c3 { position: absolute; font-style: normal; font-size: 12pt; line-height: 1; }
-  .lb-c1 { left: 3mm; top: 2.6mm; } .lb-c2 { left: 3mm; bottom: 2.6mm; } .lb-c3 { right: 3mm; top: 2.6mm; }
-  .lsheet .lbl.lb-empty { background: #fff; } .lsheet .lbl.lb-empty::before { display: none; }
+  .lsheet .lbl.lb-empty { background: #fff; }
+  .lb-bg { position: absolute; inset: 0; pointer-events: none; } .lb-bg svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .lbl > :not(.lb-bg) { position: relative; z-index: 1; }
   .lb-blank .lb-line { width: 80%; border-bottom: .25mm solid #999; height: 4.6mm; font-size: 6.5pt; color: #999; text-align: left; }
   ${LABEL_THEME_CSS}`;
 // название на бирках: «ЕлиХудели» (русский, казахский) или «EliHudeli» (английский, узбекский) — по языку печати
@@ -4535,14 +4563,13 @@ function qrInfoHtml(D, progs, missing) {
     <div class="qr-slots">${progs.map(p => `<div class="qr-slot">${S.qrCur[p] || '<span class="qr-ph">—</span>'}<span class="qr-l">${esc(progLabel(p))}</span></div>`).join('')}</div></div>`;
 }
 const labelQrOn = () => !db.settings.labelNoQr;
-const greetOf = th => (LABEL_THEMES.find(t => t[0] === th) || [])[6] || '';
-// бирка сверху вниз: логотип, имя, программа, QR (у стандарта), (поздравление), «Приятного аппетита!»
+// картинка темы — та же, что на карточке меню, в левом нижнем углу бирки
+const labelArt = th => (LABEL_LOOK[th] ? `<div class="lb-bg"><svg viewBox="0 0 148 210" preserveAspectRatio="xMinYMax meet" aria-hidden="true"><g class="lb-art">${MENU_ART[th]()}</g></svg></div>` : '');
+// бирка сверху вниз: логотип, имя, программа, QR (у стандарта), «Приятного аппетита!»
 function labelBox(inner, qr, th) {
-  const g = greetOf(th);
   const k = inner.indexOf('<div class="lb-foot"');
   const top = k < 0 ? inner : inner.slice(0, k), foot = k < 0 ? '' : inner.slice(k);
-  return `<div class="lbl ${qr !== null ? 'lb-q' : ''}"><i class="lb-c1"></i><i class="lb-c2"></i><i class="lb-c3"></i>
-    ${labelLogo()}${top}${qr !== null ? qrBox(qr) : ''}${g ? (foot ? foot.replace('<div class="lb-foot">', `<div class="lb-foot"><span class="lb-greet" data-notr>${g}</span> `) : `<div class="lb-greet" data-notr>${g}</div>`) : foot}</div>`;
+  return `<div class="lbl ${qr !== null ? 'lb-q' : ''}">${labelArt(th)}${labelLogo()}${top}${qr !== null ? qrBox(qr) : ''}${foot}</div>`;
 }
 function labelOf(r, group, th = '') {
   const prog = group === INDIV ? progLabel(r.prog) : progLabel(group);
@@ -4590,32 +4617,178 @@ async function printLabels(kind) {
   });
   if (std.length) { const root = MODALS[MODALS.length - 1]?.back; if (root) $('.qr-tool', root).hidden = !labelQrOn(); }
 }
+// пустые бирки: сколько каких программ печатать — настраивает сам человек; набор можно сохранить шаблоном («Стандарт 900 × 2, 1200 × 2…»).
+// QR-код с меню — только у стандарта, поэтому у стандарта обязательно калораж. Любую бирку в предпросмотре можно поправить:
+// вписать имя, поменять программу, убрать QR — только у неё. Набор и шаблоны запоминаются на этом компьютере
+const BLANK_STD = 'std';
+function blankLblLoad() {
+  try { const v = JSON.parse(lsGet('eh_blankLbl') || 'null'); if (v && Array.isArray(v.rows)) return { rows: v.rows }; } catch { /* нет сохранённого */ }
+  return { rows: [{ prog: BLANK_STD, kcal: '', n: LABEL_PER }] };
+}
+function blankTplLoad() {
+  try { const v = JSON.parse(lsGet('eh_blankTpl') || '[]'); return Array.isArray(v) ? v.filter(t => t && t.name && Array.isArray(t.rows)) : []; } catch { return []; }
+}
 async function printBlankLabels() {
-  const progs = uniq(db.lists.programs.filter(isNumProg).map(String));
-  await prepareMenuQr(S.pd, progs);
-  printDialog({
+  const kcals = uniq(db.lists.programs.filter(isNumProg).map(String)).sort(progCmp);
+  const others = uniq(db.lists.programs.filter(p => !isNumProg(p))).sort(progCmp);
+  await prepareMenuQr(S.pd, kcals);
+  const st = { ...blankLblLoad(), ov: {}, tpls: blankTplLoad(), tpl: '' }; // ov — правки отдельных бирок «строка:номер» → {name, prog, qr}
+  const save = () => lsSet('eh_blankLbl', JSON.stringify({ rows: st.rows }));
+  const saveTpls = () => lsSet('eh_blankTpl', JSON.stringify(st.tpls));
+  const cnt = v => Math.max(0, Math.min(240, parseInt(v, 10) || 0));
+  const bad = r => r.prog === BLANK_STD && !r.kcal; // стандарт без калоража печатать нельзя
+  const qrOn = root => !!$('[name="bqr"]', root)?.checked;
+  const rowName = r => progLabel(r.prog === BLANK_STD ? r.kcal : r.prog);
+  const tplHtml = () => `<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px">
+    <select class="input" data-t="pick" style="width:auto;padding:3px 8px"><option value="">Шаблоны${st.tpls.length ? ` (${st.tpls.length})` : ' — пока нет'}</option>
+      ${st.tpls.map(t => `<option value="${esc(t.name)}" ${t.name === st.tpl ? 'selected' : ''}>${esc(t.name)} — ${t.rows.reduce((a, r) => a + (+r.n || 0), 0)} шт.</option>`).join('')}</select>
+    <input class="input" data-t="name" placeholder="Название, например «Утро понедельник»" value="${esc(st.tpl)}" style="width:250px">
+    <button type="button" class="btn btn-sm btn-green" data-t="save">Сохранить как шаблон</button>
+    ${st.tpl ? '<button type="button" class="btn btn-sm btn-red" data-t="del">Удалить шаблон</button>' : ''}</div>`;
+  const rowsHtml = () => `${tplHtml()}<table class="t compact"><thead><tr><th>Программа</th><th>Калораж</th><th class="right">Бирок</th><th></th></tr></thead><tbody>
+    ${st.rows.map((r, i) => `<tr class="${bad(r) ? 'conflict' : ''}">
+      <td><select class="input" data-b="prog" data-i="${i}" style="padding:3px 8px">
+        <option value="${BLANK_STD}" ${r.prog === BLANK_STD ? 'selected' : ''}>Стандарт (с QR)</option>
+        ${others.map(p => `<option value="${esc(p)}" ${r.prog === p ? 'selected' : ''}>${esc(progLabel(p))}</option>`).join('')}</select></td>
+      <td>${r.prog === BLANK_STD ? `<select class="input" data-b="kcal" data-i="${i}" style="padding:3px 8px"><option value="">— калораж * —</option>
+        ${kcals.map(k => `<option value="${k}" ${String(r.kcal) === k ? 'selected' : ''}>${k} ккал${(S.qrCur || {})[k] ? '' : ' · нет меню'}</option>`).join('')}</select>` : '<span class="muted small">без QR</span>'}</td>
+      <td class="right"><input class="input" type="number" min="0" max="240" data-b="n" data-i="${i}" value="${r.n}" style="width:80px"></td>
+      <td><button type="button" class="btn btn-icon btn-sm btn-red" data-b="del" data-i="${i}" title="Убрать">✕</button></td></tr>`).join('')
+      || '<tr><td colspan="4" class="empty">Добавьте программу</td></tr>'}</tbody></table>
+    <button type="button" class="btn btn-sm mt" data-b="add">+ Программа</button>
+    ${st.rows.some(bad) ? '<div class="warn mt">У стандарта выберите калораж — без него бирка не печатается (QR-код меню свой на каждый калораж).</div>' : ''}
+    <div class="muted small mt">Нажмите на бирку в предпросмотре — можно вписать имя, поменять программу или убрать QR только у неё.
+      ${Object.keys(st.ov).length ? `Изменено бирок: <b>${Object.keys(st.ov).length}</b> · <a data-b="ovclear">вернуть все как было</a>` : ''}</div>`;
+  // бирки: сначала стандарт с QR (10 на листе), потом остальные (12 на листе) — так QR крупный, а бумага не пропадает
+  const build = root => {
+    const note = esc(($('[name="note"]', root)?.value || '').trim());
+    const foot = note ? `<div class="lb-foot">${note}</div>` : '';
+    const th = pickTheme(root), withQr = [], plain = [];
+    st.rows.forEach((r, i) => {
+      if (!r.n || bad(r)) return;
+      const qr = r.prog === BLANK_STD && qrOn(root) ? r.kcal : null;
+      for (let j = 0; j < r.n; j++) {
+        const k = `${i}:${j}`, o = st.ov[k] || {};
+        const name = String(o.name || '').trim(), prog = o.prog !== undefined ? String(o.prog).trim() : rowName(r);
+        const inner = `${name ? `<div class="lb-name">${esc(name)}</div>` : '<div class="lb-line">ФИО</div>'}${prog ? `<div class="lb-prog">${esc(prog)}</div>` : '<div class="lb-line">программа</div>'}${foot}`;
+        (qr ? withQr : plain).push(labelBox(inner, qr && o.qr !== false ? qr : null, th).replace('class="lbl', `data-k="${k}" class="lbl lb-blank`));
+      }
+    });
+    return { th, withQr, plain };
+  };
+  // правка одной бирки
+  const editOne = (k, root) => {
+    const [i] = k.split(':').map(Number), r = st.rows[i];
+    if (!r) return;
+    const o = st.ov[k] || {}, hasQr = r.prog === BLANK_STD && qrOn(root);
+    openModal({
+      title: 'Бирка',
+      body: `<div class="form">
+        <label class="field full"><span>Имя клиента (пусто — строка, вписать ручкой)</span><input class="input" name="lname" value="${esc(o.name || '')}"></label>
+        <label class="field full"><span>Программа (пусто — строка)</span><input class="input" name="lprog" list="dl-programs" value="${esc(o.prog !== undefined ? o.prog : rowName(r))}"></label>
+        ${hasQr ? `<label class="field full checks"><label><input type="checkbox" name="lqr1" ${o.qr === false ? '' : 'checked'}> QR-код с меню на этой бирке</label></label>` : ''}
+      </div>${datalists()}`,
+      foot: `${st.ov[k] ? '<button class="btn" data-m="reset">Как было</button>' : ''}<button class="btn" data-act="closeModal">Отмена</button><button class="btn btn-green" data-m="ok">Готово</button>`,
+      onMount(m) {
+        $('[name="lname"]', m).focus();
+        const done = () => { closeModal(); $('#blkRows', root).innerHTML = rowsHtml(); root.dispatchEvent(new Event('change')); };
+        $('[data-m="reset"]', m)?.addEventListener('click', () => { delete st.ov[k]; done(); });
+        $('[data-m="ok"]', m).addEventListener('click', () => {
+          const v = { name: $('[name="lname"]', m).value.trim(), prog: $('[name="lprog"]', m).value.trim() };
+          if (hasQr && !$('[name="lqr1"]', m).checked) v.qr = false;
+          if (!v.name && v.prog === rowName(r) && v.qr !== false) delete st.ov[k]; else st.ov[k] = v;
+          done();
+        });
+      },
+    });
+  };
+  await printDialog({
     title: 'пустые бирки',
+    sheets: 0,
     info: `<div class="form mt">
       ${themeSelect()}
-      <label class="field"><span>Сколько бирок</span><input class="input" type="number" name="cnt" min="1" max="240" value="${LABEL_PER}"></label>
-      <label class="field"><span>Имя (необязательно — иначе строка, вписать ручкой)</span><input class="input" name="name"></label>
-      <label class="field"><span>Программа (необязательно)</span><input class="input" name="prog" placeholder="например 1200 ккал"></label>
       <label class="field"><span>Текст внизу</span><input class="input" name="note" value="Приятного аппетита!"></label>
-      <label class="field full checks"><label><input type="checkbox" name="qr"> С QR-кодом меню на ${fmt(S.pd)} (калораж — из поля «Программа»)</label></label></div>`,
+      <label class="field full checks"><label><input type="checkbox" name="bqr" ${labelQrOn() ? 'checked' : ''}> QR-код с меню на ${fmt(S.pd)} на бирках стандарта</label></label></div>
+      <h3 class="mt">Бирки по программам</h3>
+      <div id="blkRows">${rowsHtml()}</div>${datalists()}`,
     html: root => {
-      const n = Math.max(1, Math.min(240, parseInt($('[name="cnt"]', root).value, 10) || LABEL_PER));
-      const v = k => esc($(`[name="${k}"]`, root).value.trim());
-      const pn = (String($('[name="prog"]', root).value).match(/\d{3,4}/) || [''])[0];
-      const th = pickTheme(root);
-      const one = labelBox(`${v('name') ? `<div class="lb-name">${v('name')}</div>` : '<div class="lb-line">ФИО</div>'}
-        ${v('prog') ? `<div class="lb-prog">${v('prog')}</div>` : '<div class="lb-line">программа</div>'}
-        ${v('note') ? `<div class="lb-foot">${v('note')}</div>` : ''}`, $('[name="qr"]', root).checked ? pn : null, th).replace('class="lbl', 'class="lbl lb-blank');
-      return labelSheets(Array(n).fill(one), th, labelPer($('[name="qr"]', root).checked));
+      const { th, withQr, plain } = build(root);
+      if (!withQr.length && !plain.length) return '<div class="muted" style="padding:20px">Укажите, какие бирки и сколько печатать</div>';
+      return labelSheets(withQr, th, labelPer(true)) + labelSheets(plain, th, labelPer(false));
     },
     css: LABEL_CSS,
+    // клик по бирке в предпросмотре — правка только этой бирки
+    onPreview: (doc, root) => {
+      const s = doc.createElement('style');
+      s.textContent = '.lbl[data-k] { cursor: pointer; } .lbl[data-k]:hover { outline: 2px solid #5da83c; outline-offset: -2px; }';
+      doc.head.appendChild(s);
+      doc.addEventListener('click', e => { const l = e.target.closest('.lbl[data-k]'); if (l) editOne(l.dataset.k, root); });
+    },
   });
+  const root = MODALS[MODALS.length - 1]?.back;
+  if (!root) return;
+  const box = $('#blkRows', root);
+  const refresh = () => {
+    const { withQr, plain } = build(root);
+    const sh = $('#prSheets', root);
+    if (sh) sh.textContent = `${Math.ceil(withQr.length / labelPer(true)) + Math.ceil(plain.length / labelPer(false))} (бирок: ${withQr.length + plain.length})`;
+    const go = $('[data-m="go"]', root);
+    if (go) go.disabled = st.rows.some(r => r.n && bad(r)) || !(withQr.length + plain.length);
+  };
+  const redraw = () => { box.innerHTML = rowsHtml(); save(); refresh(); root.dispatchEvent(new Event('change')); }; // change — перерисовать предпросмотр
+  box.addEventListener('click', e => {
+    const t = e.target.closest('[data-t]');
+    if (t && t.tagName === 'BUTTON') {
+      if (t.dataset.t === 'save') {
+        const name = $('[data-t="name"]', box).value.trim();
+        if (!name) { toast('Впишите название шаблона', 'bad'); $('[data-t="name"]', box).focus(); return; }
+        if (!st.rows.some(r => r.n)) { toast('В шаблоне нет ни одной бирки', 'bad'); return; }
+        const tpl = { name, rows: st.rows.map(r => ({ ...r })) }, i = st.tpls.findIndex(x => x.name === name);
+        if (i >= 0) st.tpls[i] = tpl; else st.tpls.push(tpl);
+        st.tpl = name; saveTpls(); box.innerHTML = rowsHtml();
+        toast(`Шаблон «${name}» ${i >= 0 ? 'обновлён' : 'сохранён'}`, 'ok');
+      } else if (t.dataset.t === 'del') {
+        const name = st.tpl;
+        confirmBox('Удалить шаблон', `Удалить шаблон «${esc(name)}»? Бирки сейчас в окне останутся.`, 'Удалить', () => {
+          st.tpls = st.tpls.filter(x => x.name !== name); st.tpl = ''; saveTpls(); box.innerHTML = rowsHtml();
+        });
+      }
+      return;
+    }
+    const b = e.target.closest('[data-b]');
+    if (!b) return;
+    const i = +b.dataset.i;
+    if (b.dataset.b === 'add') st.rows.push({ prog: BLANK_STD, kcal: '', n: LABEL_PER });
+    else if (b.dataset.b === 'del') { st.rows.splice(i, 1); st.ov = {}; } // номера бирок сдвинулись — правки отдельных бирок сбрасываем
+    else if (b.dataset.b === 'ovclear') st.ov = {};
+    else return;
+    redraw();
+  });
+  box.addEventListener('input', e => {
+    const el = e.target.closest('[data-b="n"]');
+    if (!el) return;
+    st.rows[+el.dataset.i].n = cnt(el.value);
+    save(); refresh();
+  });
+  box.addEventListener('change', e => {
+    const p = e.target.closest('select[data-t="pick"]');
+    if (p) { // выбран шаблон — его бирки в окно
+      const t = st.tpls.find(x => x.name === p.value);
+      st.tpl = t ? t.name : '';
+      if (t) { st.rows = t.rows.map(r => ({ ...r })); st.ov = {}; save(); }
+      box.innerHTML = rowsHtml(); refresh();
+      return;
+    }
+    const el = e.target.closest('select[data-b]');
+    if (!el) return;
+    const r = st.rows[+el.dataset.i];
+    if (el.dataset.b === 'prog') { r.prog = el.value; if (r.prog !== BLANK_STD) r.kcal = ''; }
+    else if (el.dataset.b === 'kcal') r.kcal = el.value;
+    box.innerHTML = rowsHtml(); save(); refresh(); // предпросмотр перерисует обработчик change окна печати
+  });
+  root.addEventListener('change', refresh);
+  refresh();
 }
-
 // обычные страницы (доставка, фасовка, продления): печатается только содержимое страницы
 function printView() {
   const v = $('#view').cloneNode(true);
@@ -4758,6 +4931,10 @@ const kbjuSigOf = (f, md) => { const ex = gModeOf(f) === 'exact'; return JSON.st
   .map(m => ex && mealRec(md, m.id) ? [m.id, md.d[m.id], mealRec(md, m.id)] : [m.id, md.d[m.id]])
   .concat(gModeOf(f) === 'tpl' ? [['tpl', db.menu.gt || {}, md.gx || {}]] : []).filter((x, i, a) => a.length > 1 || x[0] !== 'tpl')); };
 const REC_RULE = 'Если кухня указала граммовку и состав — вес порции и КБЖУ считай строго по ним (сумма ингредиентов), а не по типичной рецептуре.';
+// напитки в приёме (компот к комплименту): объём не подгоняется под калораж, а на карточке пишется отдельно — «Комплимент + 200 мл компота»
+const DRINKS = [['компот', 'компота'], ['морс', 'морса'], ['узвар', 'узвара'], ['кисель', 'киселя'], ['лимонад', 'лимонада'], ['напиток', 'напитка'],
+  ['какао', 'какао'], ['кофе', 'кофе'], ['чай', 'чая'], ['сок', 'сока'], ['вода', 'воды']];
+const drinkOf = name => (DRINKS.find(([k]) => new RegExp(`(^|[^а-яё])${k}($|[^а-яё])`, 'i').test(String(name))) || [])[1] || '';
 async function aiCalcKbju({ D = S.md, fid = S.mf, variant, silent = false } = {}) {
   const T = 1200; // итог всё равно пересчитывается к 900 ккал, а оттуда — к каждой программе
   const f = menuFormat(fid);
@@ -4803,8 +4980,11 @@ ${tps.length ? `Ещё для каждого блюда укажи "by_program" 
       const mac = 4 * b + 9 * fa + 4 * u;
       if (k <= 0) k = mac;
       if (mac > 0 && k > 0) { const sc = k / mac; b *= sc; fa *= sc; u *= sc; } // БЖУ согласуем с калориями
-      return { ...x, g: Math.max(0, +e.grams || 0), gp: e.by_program || {}, k, b, fa, u };
+      return { ...x, g: Math.max(0, +e.grams || 0), gp: e.by_program || {}, k, b, fa, u, dr: drinkOf(x.name) };
     });
+    // напитки приёма по программам: md.dv[программа][приём] = [мл, «компота»] — на карточке «Комплимент + 200 мл компота»
+    const drinksOf = (part, w) => { const d = part.filter(x => x.dr && w(x) > 0); return d.length ? [Math.round(d.reduce((a, x) => a + w(x), 0)), d[0].dr] : null; };
+    md.dv = {};
     const base = est.reduce((a, x) => a + x.k * x.g / 100, 0);
     if (!base) throw new Error('ИИ не вернул калорийность блюд, попробуйте ещё раз');
     const scale = T / base; // одинаковый множитель порций для всего дня
@@ -4815,22 +4995,34 @@ ${tps.length ? `Ещё для каждого блюда укажи "by_program" 
       md.kp = {};
       for (const p of uniq([String(KBJU_BASE), ...progNums(), ...tps])) {
         md.kp[p] = {};
+        md.dv[p] = {};
         // программа без шаблона — вес из ближайшей с шаблоном, пропорционально калориям; блюдо без веса — порция от ИИ
         const q = tps.includes(p) ? p : tps.slice().sort((a, b) => Math.abs(a - p) - Math.abs(b - p))[0];
+        const w0 = x => (+x.gp[q] > 0 ? +x.gp[q] * p / q : x.g * scale * toBase * p / KBJU_BASE);
+        // общие граммовки — примерные: порции еды всего дня одинаково дотягиваем (или урезаем) до калоража программы,
+        // напитки остаются как в шаблоне (200 мл компота — это 200 мл)
+        const kcal = list => list.reduce((a, x) => a + x.k * w0(x) / 100, 0);
+        const food = est.filter(x => !x.dr), need = +p - kcal(est.filter(x => x.dr)), have = kcal(food);
+        const fit = have > 0 && need > 0 ? need / have : 1;
+        const w = x => (x.dr ? w0(x) : w0(x) * fit);
         meals.forEach((m, i) => {
           const part = est.filter(x => x.meal === i);
-          const w = x => (+x.gp[q] > 0 ? +x.gp[q] * p / q : x.g * scale * toBase * p / KBJU_BASE);
           const sum = key => part.reduce((a, x) => a + x[key] * w(x) / 100, 0);
           md.kp[p][m.id] = [sum('k'), sum('b'), sum('fa'), sum('u')].map(v => Math.round(v * 10) / 10);
-          if (p === String(KBJU_BASE)) { md.k[m.id] = md.kp[p][m.id].slice(); md.g[m.id] = Math.round(part.reduce((a, x) => a + w(x), 0)); }
+          const dv = drinksOf(part, w);
+          if (dv) md.dv[p][m.id] = dv;
+          if (p === String(KBJU_BASE)) { md.k[m.id] = md.kp[p][m.id].slice(); md.g[m.id] = Math.round(part.filter(x => !x.dr).reduce((a, x) => a + w(x), 0)); }
         });
       }
     } else meals.forEach((m, i) => {
       const part = est.filter(x => x.meal === i);
-      const grams = part.reduce((a, x) => a + x.g * scale, 0);
+      const grams = part.filter(x => !x.dr).reduce((a, x) => a + x.g * scale, 0);
       const sum = key => part.reduce((a, x) => a + x[key] * x.g * scale / 100, 0);
       md.k[m.id] = [sum('k'), sum('b'), sum('fa'), sum('u')].map(v => Math.round(v * toBase * 10) / 10);
       md.g[m.id] = Math.round(grams * toBase);
+      // объём напитка — обычная порция (200 мл компота во всех программах), а не по калоражу
+      const dv = drinksOf(part, x => x.g);
+      if (dv) for (const p of uniq([String(KBJU_BASE), ...progNums()])) (md.dv[p] = md.dv[p] || {})[m.id] = dv;
     });
     md.kbjuSig = sig;
     md.kbjuAt = localIso();
@@ -5803,7 +5995,7 @@ function transferDays(src, n, to, x) {
   }
   const o = {
     id: uid('o_'), clientId: cl.id, program: prog, time: x.time === 'вечер' ? 'вечер' : x.time === 'утро' ? 'утро' : (src?.time || 'утро'), timeAt: '',
-    courier: prev?.courier || '', persons: 0, company: '', manager: x.manager || src?.manager || operator(), start: x.start, days: n,
+    courier: prev?.courier || '', persons: 0, company: '', manager: 'manager' in x ? x.manager : src?.manager || operator(), start: x.start, days: n, // из чата — только названный в сообщении
     weekdays: src && (src.dayMode || 'week') === 'week' ? src.weekdays.slice() : [1, 1, 1, 1, 1, 1, 1], dayMode: 'week', customDays: [],
     allergen: prev?.allergen || '', note: '', holidays: src?.holidays === 'no' ? 'no' : 'yes', holidayCal: src?.holidayCal || db.settings.holidayCalDefault || 'uz',
     freezes: [], skips: [], stopped: null, transfer: { fromOrder: src?.id || '', fromClient: src?.clientId || '', fromName, days: n, at: now },
@@ -6611,15 +6803,18 @@ function sheetPacking(D, lg = 'ru', cols = PK_COLS()) {
     rows.push({ group: `${tr(name === INDIV ? name : progLabel(name))} — ${list.length} ${tr('пак.')} · № ${list[0].pno}–${list[list.length - 1].pno}` });
     for (const r of list) rows.push({ cells: C.map(c => c.v(r)), st: Object.fromEntries(C.map((c, i) => [i, c.s ? c.s(r) : ''])) });
   }
-  // сводка: название — на двух первых колонках, затем «пакетов» и «с аллергеном»
-  const sm = packingSummary(D, tr), pad = a => [a[0], '', a[1], a[2]];
-  const intro = [{ cells: pad([tr('Программа'), tr('Пакетов'), tr('С аллергеном')]), st: { 0: 'head', 1: 'head', 2: 'head', 3: 'head' }, merge: [[0, 1]] },
-    ...sm.rows.map(x => ({ cells: pad(x.cells), st: { 2: 'center', 3: 'center' }, merge: [[0, 1]] })),
-    { cells: pad(sm.total), st: { 0: 'bold', 2: 'bold', 3: 'bold' }, merge: [[0, 1]] }, { cells: [] }];
+  // сводка «сколько пакетов» — не над таблицей (Excel закреплял её вместе с шапкой, и список было неудобно листать), а своим листом
+  const sm = packingSummary(D, tr);
   return { name: `${tr('Фасовка')} ${fmtS(D)}`,
     title: lg === 'ru' ? `Фасовка на ${fmtLong(D)} — ${n} пак. (вечер ${fmtS(D - 1)} + утро ${fmtS(D)})`
       : `${tr('Фасовка')} ${fmt(D)} — ${n} ${tr('пак.')} (${tr('вечер')} ${fmtS(D - 1)} + ${tr('утро')} ${fmtS(D)})`,
-    columns: C.map(c => tr(c.t)), widths: C.map(c => c.w), rows, intro, summary: sm, mergeGroups: true, fit: true, orientation: 'portrait' };
+    columns: C.map(c => tr(c.t)), widths: C.map(c => c.w), rows, summary: sm, mergeGroups: true, fit: true, orientation: 'portrait' };
+}
+// лист «Пакеты по программам»: программа — пакетов — с аллергеном, и ИТОГО
+function sheetPackingSummary(D, lg = 'ru') {
+  const tr = s => (lg === 'ru' ? s : trStr(String(s), lg)), sm = packingSummary(D, tr);
+  return { name: tr('Пакеты по программам'), title: `${tr('Пакеты по программам')} — ${fmtS(D)}`, columns: [tr('Программа'), tr('Пакетов'), tr('С аллергеном')], widths: [34, 12, 15],
+    rows: [...sm.rows.map(x => ({ cells: x.cells, st: { 1: 'center', 2: 'center' } })), { cells: sm.total, st: { 0: 'bold', 1: 'bold', 2: 'bold' } }], fit: true, orientation: 'portrait' };
 }
 const CLIENT_COLUMNS = ['ФИО', 'Телефон', 'Статус', 'Пометка', 'Программа', 'Время', 'Курьер', 'Ответственный',
   'Начало', 'Окончание', 'Дней', 'День', 'Аллерген', 'Адрес', 'Комментарий', 'Код (не менять)'];
@@ -6678,6 +6873,125 @@ function sheetHandoff(h, D) {
   };
 }
 
+/* ---------------------------------------------------------------- Excel прямо в окне программы
+   На телефоне и в сайт-версии нет программы на компьютере, которая пишет .xlsx (xlsx_io.py), — книгу собираем здесь же,
+   теми же листами и стилями: zip без сжатия, листы — тот же XML. Файл отдаётся через «Поделиться» (Telegram) или скачивается. */
+const XL_STYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="10"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font><font><b/><sz val="12"/><color rgb="FF2E6B1F"/><name val="Calibri"/></font><font><strike/><sz val="11"/><color rgb="FF8A8A8A"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFC62828"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="15"/><color rgb="FF1D1D1B"/><name val="Calibri"/></font><font><sz val="12"/><name val="Calibri"/></font><font><b/><sz val="12"/><name val="Calibri"/></font><font><b/><sz val="13"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts><fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF5DA83C"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEAF4E3"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF9BC2E6"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFDDEBF7"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2E6B1F"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="3"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFD9D9D9"/></left><right style="thin"><color rgb="FFD9D9D9"/></right><top style="thin"><color rgb="FFD9D9D9"/></top><bottom style="thin"><color rgb="FFD9D9D9"/></bottom><diagonal/></border><border><left style="thin"><color rgb="FF000000"/></left><right style="thin"><color rgb="FF000000"/></right><top style="thin"><color rgb="FF000000"/></top><bottom style="thin"><color rgb="FF000000"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="15"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="3" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="4" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="5" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="6" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="8" fillId="4" borderId="2" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="7" fillId="0" borderId="2" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="7" fillId="5" borderId="2" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="9" fillId="6" borderId="2" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="7" fillId="0" borderId="2" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="8" fillId="5" borderId="2" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+const XL_CELL_STYLE = { strike: 4, red: 5, bold: 6, center: 7, head: 1, group: 3, pgroup: 9, cell: 10, cellb: 11, shift: 12, num: 13, hdr: 14 };
+const XL_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const xlCol = i => { let s = ''; for (i += 1; i; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + (i - 1) % 26) + s; return s; };
+const xlEsc = v => String(v).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '').slice(0, 32000).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function xlCell(ref, v, s) {
+  if (v === null || v === undefined || v === '') return s >= 9 ? `<c r="${ref}" s="${s}"/>` : ''; // пустая ячейка «Базы курьеров» — с сеткой
+  if (typeof v === 'boolean') v = v ? 'Да' : 'Нет';
+  if (typeof v === 'number') return `<c r="${ref}" s="${s}"><v>${v}</v></c>`;
+  return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${xlEsc(v)}</t></is></c>`;
+}
+function xlSheetXml(sh) {
+  const columns = sh.columns || [], rows = sh.rows || [], widths = sh.widths || [], intro = sh.intro || [];
+  const last = xlCol(Math.max(columns.length, 1) - 1), top = (sh.title ? 1 : 0) + intro.length;
+  const st = (m, i, def) => XL_CELL_STYLE[(m || {})[i] ?? (m || {})[String(i)]] ?? def;
+  const merges = [], out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'];
+  if (sh.fit) out.push('<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>');
+  if (columns.length) out.push(`<sheetViews><sheetView workbookViewId="0"><pane ySplit="${1 + top}" topLeftCell="A${2 + top}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`);
+  if (widths.length || columns.length) out.push('<cols>' + Array.from({ length: Math.max(widths.length, columns.length) }, (_, i) => `<col min="${i + 1}" max="${i + 1}" width="${widths[i] || 16}" customWidth="1"/>`).join('') + '</cols>');
+  out.push('<sheetData>');
+  let r = 1;
+  if (sh.title) { out.push(`<row r="${r}" ht="26" customHeight="1">${xlCell('A' + r, sh.title, 8)}</row>`); merges.push(`A${r}:${last}${r}`); r++; }
+  for (const row of intro) {
+    out.push(`<row r="${r}">${(row.cells || []).map((v, i) => xlCell(xlCol(i) + r, v, st(row.st, i, 2))).join('')}</row>`);
+    for (const [a, z] of row.merge || []) merges.push(`${xlCol(a)}${r}:${xlCol(z)}${r}`);
+    r++;
+  }
+  const head = r;
+  if (columns.length) { out.push(`<row r="${r}">${columns.map((c, i) => xlCell(xlCol(i) + r, c, 1)).join('')}</row>`); r++; }
+  for (const row of rows) {
+    if (row && !Array.isArray(row) && 'title' in row) {
+      out.push(`<row r="${r}" ht="24" customHeight="1">${xlCell('A' + r, row.title, 8)}</row>`);
+      if (columns.length) merges.push(`A${r}:${last}${r}`);
+    } else if (row && !Array.isArray(row) && 'cells' in row) {
+      out.push(`<row r="${r}">${row.cells.map((v, i) => xlCell(xlCol(i) + r, v, st(row.st, i, 2))).join('')}</row>`);
+      for (const [a, z] of row.merge || []) merges.push(`${xlCol(a)}${r}:${xlCol(z)}${r}`);
+    } else if (row && !Array.isArray(row)) {
+      out.push(`<row r="${r}">${xlCell('A' + r, row.group || '', 3)}</row>`);
+    } else out.push(`<row r="${r}">${(row || []).map((v, i) => xlCell(xlCol(i) + r, v, 2)).join('')}</row>`);
+    r++;
+  }
+  out.push('</sheetData>');
+  if (columns.length && rows.length && !sh.mergeGroups) out.push(`<autoFilter ref="A${head}:${xlCol(columns.length - 1)}${r - 1}"/>`);
+  if (merges.length) out.push(`<mergeCells count="${merges.length}">${merges.map(m => `<mergeCell ref="${m}"/>`).join('')}</mergeCells>`);
+  out.push('<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>');
+  out.push(`<pageSetup${sh.fit ? ' paperSize="9" fitToWidth="1"' : ''} orientation="${sh.orientation || 'landscape'}" fitToHeight="0"/></worksheet>`);
+  return out.join('');
+}
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+const crc32 = u => { let c = 0xFFFFFFFF; for (let i = 0; i < u.length; i++) c = CRC_T[(c ^ u[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+// zip без сжатия: [[имя, текст]] → Blob
+function zipBlob(files, type) {
+  const te = new TextEncoder(), parts = [], cen = [], d = new Date();
+  const dt = ((d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1)), dd = (((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate());
+  let off = 0;
+  for (const [name, text] of files) {
+    const nb = te.encode(name), data = te.encode(text), crc = crc32(data);
+    const h = new DataView(new ArrayBuffer(30)), c = new DataView(new ArrayBuffer(46));
+    [[0, 0x04034b50, 4], [4, 20, 2], [6, 0x0800, 2], [10, dt, 2], [12, dd, 2], [14, crc, 4], [18, data.length, 4], [22, data.length, 4], [26, nb.length, 2]]
+      .forEach(([o, v, n]) => (n === 4 ? h.setUint32(o, v, true) : h.setUint16(o, v, true)));
+    [[0, 0x02014b50, 4], [4, 20, 2], [6, 20, 2], [8, 0x0800, 2], [12, dt, 2], [14, dd, 2], [16, crc, 4], [20, data.length, 4], [24, data.length, 4], [28, nb.length, 2], [42, off, 4]]
+      .forEach(([o, v, n]) => (n === 4 ? c.setUint32(o, v, true) : c.setUint16(o, v, true)));
+    parts.push(new Uint8Array(h.buffer), nb, data);
+    cen.push(new Uint8Array(c.buffer), nb);
+    off += 30 + nb.length + data.length;
+  }
+  const size = cen.reduce((a, x) => a + x.length, 0), e = new DataView(new ArrayBuffer(22));
+  e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true); e.setUint32(12, size, true); e.setUint32(16, off, true);
+  return new Blob([...parts, ...cen, new Uint8Array(e.buffer)], { type });
+}
+function xlsxBlob(sheets) {
+  const used = new Set();
+  const names = sheets.map(s => {
+    let base = String(s.name || '').replace(/[[\]*?/\\:]/g, ' ').trim().slice(0, 31) || 'Лист', name = base;
+    for (let n = 2; used.has(name.toLowerCase()); n++) name = base.slice(0, 31 - ` (${n})`.length) + ` (${n})`;
+    used.add(name.toLowerCase());
+    return name;
+  });
+  const X = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>', R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  const files = [
+    ['[Content_Types].xml', X + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
+      + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+      + sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('') + '</Types>'],
+    ['_rels/.rels', X + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${R}/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
+    ['xl/workbook.xml', X + `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="${R}"><sheets>`
+      + names.map((n, i) => `<sheet name="${xlEsc(n).replace(/"/g, '&quot;')}" sheetId="${i + 1}"${sheets[i].hidden ? ' state="hidden"' : ''} r:id="rId${i + 1}"/>`).join('') + '</sheets></workbook>'],
+    ['xl/_rels/workbook.xml.rels', X + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      + sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="${R}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')
+      + `<Relationship Id="rId${sheets.length + 1}" Type="${R}/styles" Target="styles.xml"/></Relationships>`],
+    ['xl/styles.xml', XL_STYLES],
+    ...sheets.map((s, i) => [`xl/worksheets/sheet${i + 1}.xml`, xlSheetXml(s)]),
+  ];
+  return zipBlob(files, XL_MIME);
+}
+// файл с телефона / сайта: «Поделиться» (сразу в Telegram), иначе скачать; в приложении Android — через приложение, если оно умеет
+async function deliverFile(name, blob) {
+  const file = new File([blob], name, { type: blob.type });
+  if (window.EHAndroid && EHAndroid.saveFile) {
+    const b = new Uint8Array(await blob.arrayBuffer());
+    let s = '';
+    for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+    EHAndroid.saveFile(name, blob.type, btoa(s));
+    return 'app';
+  }
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); return 'share'; } catch (e) { if (e && e.name === 'AbortError') return 'cancel'; }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+  return 'download';
+}
+// приложение Android (не сайт-версия): файлы отдаёт только если в нём есть мост saveFile
+const nativeAndroid = () => !!(window.EHAndroid && window.EHAndroid.print);
+const canFileHere = () => !window.EHAndroid || !nativeAndroid() || !!window.EHAndroid.saveFile;
 async function exportFile(kind, filename, payload) {
   const r = await api('POST', '/api/export', JSON.stringify({ kind, filename, ...payload }));
   return r.path;
@@ -6700,7 +7014,7 @@ async function doHandoff(kinds) {
     if (kinds.includes('xlsx')) {
       const D = S.handoffDate;
       paths.push(await exportFile('xlsx', base, {
-        sheets: [sheetHandoff(h, D), sheetDelivery(D), sheetPacking(D), ...sheetsPerCourier(D),
+        sheets: [sheetHandoff(h, D), sheetDelivery(D), sheetPacking(D), sheetPackingSummary(D), ...sheetsPerCourier(D),
           sheetClients(), sheetOrders()], embed: snapshot,
       }));
     }
@@ -6952,6 +7266,19 @@ const ACT = {
   editOrder: d => { const o = ORDERS.get(d.id); if (o) openOrderForm({ clientId: o.clientId, order: o }); },
   freezeOrder: d => { const o = ORDERS.get(d.id); if (o) openFreeze(o); },
   shiftsOrder: d => { const o = ORDERS.get(d.id); if (o) openFreeze(o, 'shifts'); },
+  flipTime: d => {
+    const o = ORDERS.get(d.id), cl = o && CLIENTS.get(o.clientId);
+    if (!o) return;
+    const to = o.time === 'вечер' ? 'утро' : 'вечер';
+    const own = Object.keys(o.dayTimes || {}).filter(x => dn(x) >= TODAY).length + Object.keys(o.wdTimes || {}).length;
+    confirmBox('Время доставки', `<b>${esc(cl?.name || '')}</b>: ${esc(o.time)} → <b>${to}</b> — для всего заказа.${own ? ' Дни, отдельно настроенные в «Сменах доставки», останутся как есть.' : ''}`, `Перевести на ${to}`, () => {
+      audit(`Время доставки ${cl?.name || ''}: ${o.time} → ${to}`, { kind: 'order', cid: o.clientId });
+      o.time = to;
+      touch(o);
+      commit(`Время доставки: ${cl?.name || ''}, ${progLabel(o.program)} — ${to === 'вечер' ? 'утро → вечер' : 'вечер → утро'}`);
+      toast('Время доставки: ' + to, 'ok');
+    });
+  },
   skipOrder: d => { const o = ORDERS.get(d.id); if (o) openFreeze(o, 'days'); },
   stopOrder: d => { const o = ORDERS.get(d.id); if (o) openStop(o); },
   findReturners: () => openFindReturners(),
@@ -7052,7 +7379,7 @@ const ACT = {
       const D = S.pd;
       const lg = LANGS[lsGet('eh_plang')] ? lsGet('eh_plang') : 'ru';
       if (lg !== 'ru') await ensureAlTr(lg, packingGroups(D).flatMap(([, l]) => l).map(r => r.o.allergen));
-      const p = await exportFile('xlsx', `Фасовка_${fmt(D)}${lg === 'ru' ? '' : '_' + lg}`, { sheets: [sheetPacking(D, lg)] });
+      const p = await exportFile('xlsx', `Фасовка_${fmt(D)}${lg === 'ru' ? '' : '_' + lg}`, { sheets: [sheetPacking(D, lg), sheetPackingSummary(D, lg)] });
       await api('POST', '/api/open-folder', JSON.stringify({ path: p }));
       toast('Excel готов: ' + p, 'ok', 6000);
     } catch (e) { toast('Ошибка: ' + e.message, 'bad'); }
@@ -8050,6 +8377,7 @@ const BIND = {
     lsSet('eh_pin_at', String(Date.now()));
     toast('Сохранено на этом устройстве', 'ok');
   },
+  cfTagSel: (v, _el, t) => { if (t === 'change' && v && !(S.cf.tags || []).includes(v)) ACT.cfTag({ v }); },
   cfTagIn: (v, el, t) => {
     const x = tagPicked(v, t);
     if (!x) { if (t === 'change' && v.trim()) { el.value = ''; toast('Нет такой пометки или тега', 'bad'); } return; }
