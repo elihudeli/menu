@@ -91,7 +91,7 @@ const ACT_PERM = {
   mcMeal: 'menu', mcExtraAdd: 'menu', mcExtraDel: 'menu', mcCalc: 'menu', mcRec: 'menu', mcGrams: 'menu',
   aiAllergens: 'packing', alRevert: 'clients.edit',
   holCalNew: 'admin.lists', holCalDel: 'admin.lists', holDayAdd: 'admin.lists', holDayDel: 'admin.lists', holDayEdit: 'admin.lists',
-  courierSubs: 'couriers.assign', subDel: 'couriers.assign', dselSubs: 'couriers.assign', addrKeep: 'clients.address', addrRevert: 'clients.address', addrNew: 'clients.address', addrEdit: 'clients.address', addrDel: 'clients.address', addrApply: 'clients.address',
+  courierSubs: 'couriers.assign', subDel: 'couriers.assign', dselSubs: 'couriers.assign', addrKeep: 'clients.address', addrRevert: 'clients.address', addrNew: 'clients.address', addrEdit: 'clients.address', addrDel: 'clients.address', addrApply: 'clients.address', dnKeep: 'couriers.assign', dnNo: 'couriers.assign', dnOk: 'v.delivery',
   incApply: 'incident', incUndo: 'incident',
   tagQuick: d => (d.k === 'ctags' ? 'couriers' : 'clients.edit'),
   groupAdd: 'admin.lists', groupRename: 'admin.lists', groupDel: 'admin.lists', groupPerson: 'admin.lists', groupPersonEdit: 'admin.lists', groupPersonDel: 'admin.lists',
@@ -99,7 +99,7 @@ const ACT_PERM = {
   cloudSave: 'cloud', cloudSwitch: 'cloud', cloudForce: 'cloud.force', menuSitePublish: 'cloud', cloudOff: 'cloud', cloudPublish: 'publish',
 };
 // эти действия ничего не меняют в базе — их можно делать, даже когда программа у другого
-const NONMUT = new Set(['mxShift', 'mxSet', 'rolePreview', 'asExit', 'dselAll', 'addrNewsOk', 'dselClear', 'dcToggle', 'dcAll', 'devicesLoad', 'devBlock', 'devPerms', 'setLang', 'setTheme', 'setZoom', 'theme', 'cloudBackupsLoad', 'cloudBackupNow', 'installerDialog', 'courierLink', 'copyCourier', 'courierBase', 'exportDelivery', 'labels', 'exportPacking', 'exportBoth', 'pdgPng', 'printPage', 'printPacking', 'menuPrint',
+const NONMUT = new Set(['mxShift', 'delivNews', 'mxSet', 'rolePreview', 'asExit', 'dselAll', 'addrNewsOk', 'dselClear', 'dcToggle', 'dcAll', 'devicesLoad', 'devBlock', 'devPerms', 'setLang', 'setTheme', 'setZoom', 'theme', 'cloudBackupsLoad', 'cloudBackupNow', 'installerDialog', 'courierLink', 'copyCourier', 'courierBase', 'exportDelivery', 'labels', 'exportPacking', 'exportBoth', 'pdgPng', 'printPage', 'printPacking', 'menuPrint',
   'menuPrintAll', 'menuPdf', 'exportClients', 'clientsTemplate', 'exportJson', 'exportXlsx', 'openFolder', 'backupNow', 'makeInstaller', 'aiEditKey',
   'openMenuFiles', 'cloudSave', 'cloudSwitch', 'cloudForce', 'cloudOff', 'aiPick', 'gtFmt', 'gtSel', 'mcRec', 'cloudPublish']);
 const BIND_PERM = {
