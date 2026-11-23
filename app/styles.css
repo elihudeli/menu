@@ -1118,6 +1118,10 @@ body.dark .t.dl-t th, body.dark .t.dl-t td { border-color: #59606b; }
 .addr-news h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
 .addr-news-it { padding: 6px 0; border-top: 1px solid var(--line); }
 .addr-news-it b.click { cursor: pointer; text-decoration: underline; }
+.addr-news-list .addr-news-it:first-child { border-top: 0; }
+.btn.btn-alert { background: #e02424; border-color: #e02424; color: #fff; font-weight: 600; box-shadow: 0 0 0 3px rgba(224, 36, 36, .25); }
+.btn.btn-alert:hover { background: #c81e1e; border-color: #c81e1e; color: #fff; }
+.btn-alert .alert-n { background: #fff; color: #e02424; border-radius: 10px; padding: 0 7px; margin-left: 4px; font-size: 12.5px; }
 .as-bar { position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 9500; background: #7b4fa8; color: #fff; padding: 6px 8px 6px 14px;
   border-radius: 0 0 12px 12px; display: flex; align-items: center; gap: 10px; font-size: 13px; box-shadow: 0 4px 14px rgba(0,0,0,.2); }
 .side-tool.on { background: #7b4fa8; color: #fff; }
