@@ -558,6 +558,7 @@ body.dark .addr-hint { background: #3a3320; }
 .clients-t tr.srow:hover { filter: brightness(.96); }
 .rt tr.mrow td { background: color-mix(in srgb, var(--mc) 14%, #fff) !important; }
 .rt tr.mrow:hover td { background: color-mix(in srgb, var(--mc) 24%, #fff) !important; }
+.coin-ico { width: 26px; height: 26px; vertical-align: middle; margin-left: 4px; } /* «Продления»: стопка монет у долгих клиентов */
 .bulk { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
 .bulk select { padding: 3px 6px; font-size: 12px; }
 .bulk a { cursor: pointer; }
