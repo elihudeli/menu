@@ -3611,7 +3611,7 @@ async function pdgPng() {
   const dark = document.body.classList.contains('dark');
   const P = dark ? { bg: '#1e222a', ink: '#e6e9ee', muted: '#9ca3ad', head: '#262b34', base: [30, 34, 42], mix: 0.22, sep: '#15181d', prog: ['#1f3a2d', '#8fd17a'], box: '#3a2427', red: '#ff6b5f', empty: '#6b7280' }
     : { bg: '#ffffff', ink: '#1d1d1b', muted: '#6f6f6a', head: '#f3f4f1', base: [255, 255, 255], mix: 0.16, sep: '#ffffff', prog: ['#eaf4e3', '#3f7f25'], box: '#fde8e7', red: '#d64541', empty: '#9a9d98' };
-  const cols = [['№', 40], ['ФИО', 260], ['Программа', 250], ['Период', 120], ['Дней', 56], ['Ответственный', 150], ['Курьер', 130]];
+  const cols = [['№', 40], ['ФИО', 260], ['Программа', 250], ['Период', 120], ['Дней', 76], ['Ответственный', 150], ['Курьер', 130]];
   const W = 40 + cols.reduce((a, c) => a + c[1], 0), rowH = 40, headH = 150;
   const H = headH + 38 + Math.max(1, list.length) * rowH + 60;
   const cv = document.createElement('canvas');
@@ -3619,6 +3619,9 @@ async function pdgPng() {
   cv.width = W * sc; cv.height = H * sc;
   const g = cv.getContext('2d');
   g.scale(sc, sc);
+  const crown = endCrownOn() ? crownManager(crownScores(dayAll(TODAY))) : '';
+  const coinImg = {}; // монеты долгих клиентов — те же картинки, что на странице
+  for (const kd of uniq(list.map(coinKind).filter(Boolean))) { const im = new Image(); im.src = coinUrl(kd); try { await im.decode(); coinImg[kd] = im; } catch { /* без монет */ } }
   g.fillStyle = P.bg; g.fillRect(0, 0, W, H);
   const text = (t, x, y, font, color, maxW) => {
     g.font = font; g.fillStyle = color;
@@ -3648,6 +3651,7 @@ async function pdgPng() {
     // строка в цвет ответственного, как на странице «Продления» (цвет поверх фона темы)
     const mc = String(o.manager ? personColor('managers', o.manager) : '#9a9d98').replace('#', ''), mix = j => Math.round(P.base[j / 2] + (parseInt(mc.slice(j, j + 2), 16) - P.base[j / 2]) * P.mix);
     g.fillStyle = /^[0-9a-f]{6}$/i.test(mc) ? `rgb(${mix(0)},${mix(2)},${mix(4)})` : P.head; g.fillRect(20, y, W - 40, rowH);
+    const coin = coinKind(o);
     const cy = y + 25;
     let cx = 20;
     const cell = (val, w, font = `400 14px ${F}`, color = P.ink) => { text(val, cx + 8, cy, font, color, w - 14); cx += w; };
@@ -3666,8 +3670,12 @@ async function pdgPng() {
     cell(cl.name, cols[1][1], `600 14px ${F}`);
     pill(progLabel(o.program), cols[2][1], ...P.prog);
     cell(`${fmtS(k.start)} – ${fmtS(k.end)}`, cols[3][1]);
+    const dx = cx;
     cell(o.days, cols[4][1]);
+    if (coinImg[coin]) g.drawImage(coinImg[coin], dx + 12 + g.measureText(String(o.days)).width, y + 7, 26, 26); // стопка монет рядом с днями
+    const mx = cx;
     pill(o.manager, cols[5][1], ...tone('managers', o.manager));
+    if (crown && o.manager === crown) { g.font = `600 12.5px ${F}`; text('👑', mx + 6 + g.measureText(o.manager).width + 22, cy, `15px ${F}`, P.ink); }
     pill(o.courier, cols[6][1], ...tone('couriers', o.courier));
     g.fillStyle = P.sep; g.fillRect(20, y + rowH - 1, W - 40, 1);
     y += rowH;
@@ -3686,19 +3694,74 @@ async function pdgPng() {
   }
 }
 
+// «Продления»: награда долгому клиенту рядом с числом дней. Стандарт — серебро: 10 дн. — 1 монета, 20 — 2, 30 — 3, 40 — кошелёк, 60 — сумка.
+// Индивидуальное меню — золото: 10 — 1 монета, 20 — 2, 30 — 3, 40 — мешок, 50 — сейф. Ключ: «silver-2», «gold-safe»…
+const coinKind = o => (endCoinsOn() ? coinTier(o) : '');
+const coinTier = o => {
+  const d = +o.days || 0, gold = indivPrograms().has(String(o.program).toLowerCase());
+  const t = gold ? (d >= 50 ? 'safe' : d >= 40 ? 'sack' : d >= 30 ? 3 : d >= 20 ? 2 : d >= 10 ? 1 : 0)
+    : (d >= 60 ? 'bag' : d >= 40 ? 'wallet' : d >= 30 ? 3 : d >= 20 ? 2 : d >= 10 ? 1 : 0);
+  return t ? `${gold ? 'gold' : 'silver'}-${t}` : '';
+};
+// настройки «Продлений» на этом компьютере: показывать монеты и корону
+const endCoinsOn = () => lsGet('eh_end_coins') !== '0', endCrownOn = () => lsGet('eh_end_crown') !== '0';
+// корона — в каждом дне «Продлений» менеджеру с самыми «богатыми» клиентами этого дня (среди всех ответственных).
+// Баллы за клиента: монеты 1/2/3, кошелёк 4, сумка 5 (серебро); золото (индив) на 1 больше: 2/3/4, мешок 5, сейф 6;
+// Sirtfood / Fasting — не меньше 2; клиент без награды — 0,5. Поровну у первых — короны нет ни у кого.
+const COIN_PTS = { 1: 1, 2: 2, 3: 3, wallet: 4, sack: 4, bag: 5, safe: 5 };
+const crownPts = o => { const k = coinTier(o), [metal, t] = k.split('-'), p = k ? COIN_PTS[t] + (metal === 'gold' ? 1 : 0) : 0;
+  return Math.max(p, /sirt|fasting/i.test(String(o.program)) ? 2 : 0) || 0.5; };
+function crownScores(list) {
+  const seen = new Set(), n = new Map();
+  for (const o of list) {
+    if (!o.manager || seen.has(o.clientId)) continue; // 2 заказа одного клиента — один клиент
+    seen.add(o.clientId);
+    n.set(o.manager, (n.get(o.manager) || 0) + crownPts(o));
+  }
+  return n;
+}
+// все заканчивающие в день d — без фильтра «ответственный», чтобы корона была честной
+const dayAll = d => { const keep = S.eMan; S.eMan = ''; const l = endingData().soon.filter(o => calc(o).end === d); S.eMan = keep; return l; };
+function crownManager(scores) {
+  const top = [...scores.entries()].sort((x, y) => y[1] - x[1]);
+  return top.length && (top.length === 1 || top[0][1] > top[1][1]) ? top[0][0] : '';
+}
+const COIN_TITLE = { 1: '1 монета', 2: '2 монеты', 3: '3 монеты', wallet: 'кошелёк', bag: 'сумка', sack: 'мешок', safe: 'сейф' };
+// картинки 26×26: монеты сбоку стопкой, кошелёк, сумка, мешок, сейф — с монетами цвета металла
+const coinSvg = key => {
+  const [metal, t] = key.split('-'), [face, edge, st] = metal === 'gold' ? ['#f6c83a', '#c9970e', '#80600a'] : ['#e3e7eb', '#a9b1b9', '#69727b'];
+  const coin = (cx, cy, rx = 9) => `<path d='M${cx - rx} ${cy} v3 a${rx} 3 0 0 0 ${2 * rx} 0 v-3' fill='${edge}' stroke='${st}' stroke-width='.9'/><ellipse cx='${cx}' cy='${cy}' rx='${rx}' ry='3' fill='${face}' stroke='${st}' stroke-width='.9'/>`;
+  const round = (cx, cy, r) => `<circle cx='${cx}' cy='${cy}' r='${r}' fill='${face}' stroke='${st}' stroke-width='.9'/><circle cx='${cx}' cy='${cy}' r='${r * 0.6}' fill='none' stroke='${st}' stroke-width='.7'/>`;
+  const body = {
+    1: coin(13, 19), 2: [19, 15].map(y => coin(13, y)).join(''), 3: [19, 15, 11].map(y => coin(13, y)).join(''),
+    wallet: `${round(9, 7, 5)}${round(16, 6, 5)}<rect x='2' y='9' width='22' height='14' rx='3' fill='#8b5a2b' stroke='#4e3115' stroke-width='1'/>`
+      + `<rect x='14' y='13' width='10' height='6' rx='2' fill='#a8713a' stroke='#4e3115' stroke-width='.8'/><circle cx='18' cy='16' r='1.4' fill='${face}'/>`,
+    bag: `${round(10, 9, 4.5)}${round(16, 8, 4.5)}<path d='M8 9 q5 -8 10 0' fill='none' stroke='#3e2723' stroke-width='1.6'/>`
+      + `<path d='M4 11 h18 l2 12 h-22 z' fill='#6d4c41' stroke='#3e2723' stroke-width='1' stroke-linejoin='round'/><rect x='11' y='14' width='4' height='3' rx='.8' fill='${face}'/>`,
+    sack: `${round(9, 6, 4)}${round(16, 5, 4)}<path d='M9 10 q-8 6 -5 11 q2 3 9 3 q7 0 9 -3 q3 -5 -5 -11 z' fill='#c8a165' stroke='#7a5a2a' stroke-width='1'/>`
+      + `<path d='M9 10 h8' stroke='#7a5a2a' stroke-width='1.6'/>${round(13, 17, 3.5)}`,
+    safe: `<rect x='2' y='3' width='22' height='20' rx='2' fill='#5f6b76' stroke='#2f363d' stroke-width='1'/><rect x='5' y='6' width='16' height='14' rx='1' fill='#7c8894' stroke='#2f363d' stroke-width='.8'/>`
+      + `<circle cx='10' cy='13' r='3' fill='#cfd6dc' stroke='#2f363d' stroke-width='.8'/><path d='M10 10.5 v2.5' stroke='#2f363d' stroke-width='.8'/>${coin(18, 18, 5)}${coin(18, 15, 5)}`,
+  }[t] || '';
+  return `<svg xmlns='http://www.w3.org/2000/svg' width='26' height='26'>${body}</svg>`;
+};
+const coinUrl = kind => 'data:image/svg+xml,' + encodeURIComponent(coinSvg(kind)).replace(/'/g, '%27');
 function viewEnding() {
   const { soon, lost } = endingData();
   const managers = uniq(db.orders.filter(o => calc(o).end >= TODAY - 14).map(o => o.manager)).sort(ruCmp);
+  let scores = new Map(), crown = ''; // корона своего дня — считается в table()
   const row = (o, i) => {
     const cl = CLIENTS.get(o.clientId);
     const k = calc(o);
+    const coin = coinKind(o);
     return `<tr class="click mrow" data-act="openClient" data-id="${esc(cl.id)}" style="--mc:${o.manager ? personColor('managers', o.manager) : '#9a9d98'}">
       <td class="rn">${i + 1}</td><td class="name">${esc(cl.name)}</td><td class="nowrap">${esc(phoneShort(cl.phone))}</td>
       <td><span class="pill">${esc(progLabel(o.program))}</span></td>
-      <td class="nowrap">${fmtS(k.start)} – ${fmtS(k.end)}</td><td class="center">${o.days}</td>
-      <td>${chip('managers', o.manager)}</td><td>${chip('couriers', o.courier)}</td></tr>`;
+      <td class="nowrap">${fmtS(k.start)} – ${fmtS(k.end)}</td><td class="center nowrap">${o.days}${coin ? `<img class="coin-ico" src="${coinUrl(coin)}" alt="" title="${COIN_TITLE[coin.split('-')[1]]}">` : ''}</td>
+      <td class="nowrap">${chip('managers', o.manager)}${crown && o.manager === crown ? ` <span title="Самые богатые клиенты в «Продлениях»: ${String(Math.round(scores.get(crown) * 10) / 10).replace('.', ',')} балла">👑</span>` : ''}</td><td>${chip('couriers', o.courier)}</td></tr>`;
   };
-  const table = list => `<table class="rt"><thead><tr><th>№</th><th>ФИО</th><th>Телефон</th><th>Программа</th><th>Период</th>
+  const table = (list, all = list) => { scores = endCrownOn() ? crownScores(all) : new Map(); crown = crownManager(scores); return tableHtml(list); };
+  const tableHtml = list => `<table class="rt"><thead><tr><th>№</th><th>ФИО</th><th>Телефон</th><th>Программа</th><th>Период</th>
     <th class="center">Дней</th><th>Ответственный</th><th>Курьер</th></tr></thead>
     <tbody>${list.map(row).join('')}</tbody></table>`;
   const groupTitle = d => {
@@ -3715,6 +3778,8 @@ function viewEnding() {
     <div class="chips">${[[0, 'Сегодня'], [1, 'До завтра'], [2, '3 дня'], [6, 'Неделя']]
       .map(([v, l]) => `<button class="${S.horizon === v ? 'on' : ''}" data-act="setHorizon" data-v="${v}">${l}</button>`).join('')}</div>
     <label class="row small" style="gap:6px">до даты <input class="input" type="date" data-bind="eDate" value="${isoOf(TODAY + S.horizon)}"></label>
+    <label class="row small" style="gap:4px" title="Монеты, кошелёк, мешок… у долгих клиентов — на этом компьютере"><input type="checkbox" data-bind="eCoins" ${endCoinsOn() ? 'checked' : ''}> Монеты</label>
+    <label class="row small" style="gap:4px" title="👑 у менеджера с самыми богатыми клиентами в «Продлениях» — на этом компьютере"><input type="checkbox" data-bind="eCrown" ${endCrownOn() ? 'checked' : ''}> Корона</label>
     <select class="input" data-bind="eMan"><option value="">Все ответственные</option>${opts(managers, S.eMan)}</select>
     <button class="btn btn-green" data-act="pdgPng" title="Картинка со списком «сегодня последний день» — сохранится в папку и скопируется для Telegram">PNG: сегодня последний день (${lastToday})</button>
   </div>
@@ -3730,9 +3795,9 @@ function viewEnding() {
     </div>
     ${groups.length ? groups.map(([d, list]) => {
     const [t, cls] = groupTitle(d);
-    return `<div class="report-group ${cls}"><span class="dot"></span>${t}<span class="cnt">${list.length}</span></div>${table(list)}`;
+    return `<div class="report-group ${cls}"><span class="dot"></span>${t}<span class="cnt">${list.length}</span></div>${table(list, S.eMan ? dayAll(d) : list)}`;
   }).join('') : '<div class="report-empty">В выбранный период никто не заканчивает</div>'}
-    ${lost.length ? `<div class="report-group lost"><span class="dot"></span>Закончили за 2 недели и не продлили<span class="cnt">${lost.length}</span></div>${table(lost)}` : ''}
+    ${lost.length ? `<div class="report-group lost"><span class="dot"></span>Закончили за 2 недели и не продлили<span class="cnt">${lost.length}</span></div>${table(lost, [])}` : ''}
     <div class="report-foot">Сформировано ${fmtStamp(localIso())}</div>
   </div>`;
 }
@@ -8346,6 +8411,8 @@ const BIND = {
   incProg: (v, _el, t) => { if (t === 'change') { S.inc.prog = v; render(); } },
   incReason: v => { S.inc.reason = v; },
   eMan: (v, _el, t) => { if (t === 'change') { S.eMan = v; render(); } },
+  eCoins: (_v, el, t) => { if (t === 'change') { lsSet('eh_end_coins', el.checked ? '1' : '0'); render(); } },
+  eCrown: (_v, el, t) => { if (t === 'change') { lsSet('eh_end_crown', el.checked ? '1' : '0'); render(); } },
   eDate: (v, _el, t) => { const n = dn(v); if (t === 'change' && Number.isFinite(n)) { S.horizon = Math.max(0, n - TODAY); render(); } },
   gMode: (v, el, t) => {
     if (t !== 'change') return;
