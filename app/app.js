@@ -7235,14 +7235,38 @@ async function deliverFile(name, blob) {
     EHAndroid.saveFile(name, blob.type, btoa(s));
     return 'app';
   }
+  if (nativeAndroid()) { // старое приложение Android без сохранения файлов — само оно файл не отдаст
+    toast('Чтобы скачивать файлы, обновите приложение на телефоне (новый .apk из «Облака»)', 'bad', 8000);
+    return 'cancel';
+  }
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: name }); return 'share'; } catch (e) { if (e && e.name === 'AbortError') return 'cancel'; }
+    try { await navigator.share({ files: [file], title: name }); return 'share'; } catch (e) {
+      if (e && e.name === 'AbortError') return 'cancel';
+      // файл собирался долго — телефон (iPhone) просит нажать ещё раз: окошко «Отправить / Скачать»
+      if (e && e.name === 'NotAllowedError') return shareAgain(file, blob, name);
+    }
   }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = name;
   document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
   return 'download';
+}
+function shareAgain(file, blob, name) {
+  return new Promise(done => {
+    let how = 'cancel';
+    const url = URL.createObjectURL(blob);
+    openModal({ title: 'Файл готов', body: `<p><b>${esc(name)}</b></p><p class="muted small">Нажмите «Отправить» — откроется «Поделиться» (Telegram и т. п.), или «Скачать».</p>`,
+      foot: `<a class="btn" data-m="dl" href="${url}" download="${esc(name)}">Скачать</a><button class="btn btn-green" data-m="share">Отправить</button>`,
+      onClose: () => { setTimeout(() => URL.revokeObjectURL(url), 60000); done(how); },
+      onMount(root) {
+        $('[data-m="dl"]', root).addEventListener('click', () => { how = 'download'; setTimeout(closeModal, 300); });
+        $('[data-m="share"]', root).addEventListener('click', async () => {
+          try { await navigator.share({ files: [file], title: name }); how = 'share'; } catch { /* отменили */ }
+          closeModal();
+        });
+      } });
+  });
 }
 // приложение Android (не сайт-версия): файлы отдаёт только если в нём есть мост saveFile
 const nativeAndroid = () => !!(window.EHAndroid && window.EHAndroid.print);
