@@ -541,6 +541,8 @@ function subHits(r, D) {
 // D — день в заказе (день фасовки): вечерний пакет курьер везёт в тот же вечер, утренний — на следующее утро.
 // Замены и «Смена доставки» задаются по дню, когда курьер везёт, — поэтому утро сдвигаем на +1.
 const rideDay = (D, t) => (t === 'утро' ? D + 1 : D);
+// дни заказа — дни ГОТОВКИ: приготовленное D везут «на D+1» — вечером D или утром D+1
+const rideText = (D, t) => (t === 'вечер' ? 'вечером ' + fmtS(D) : 'утром ' + fmtS(D + 1));
 const cookDay = (P, t) => (t === 'утро' ? P - 1 : P);
 function courierOn(o, D, t = o.time) {
   const P = rideDay(D, t);
@@ -1251,6 +1253,15 @@ function planChatEdit(cl, changes) {
   const steps = [];
   const os = openOrdersOf(cl), main = os[0] || null;
   const say = (t, fn = null, cls = '') => steps.push({ t, fn, cls });
+  // даты в чате — дни ГОТОВКИ: «готовка 20.11» — 20-го готовим на 21.11. Предупреждаем, если по графику клиента
+  // в этот день готовки нет или 21.11 у клиента выходной / праздник
+  const dayOff = (o, x) => (holidaySkips(o).includes(x) ? 'праздник' : (o.skips || []).includes(isoOf(x)) ? 'пропуск'
+    : !dayAllowed(o, x) ? `выходной (${WD_FULL[wdOf(x)].toLowerCase()})` : '');
+  const cookWarn = (o, d, freezes) => {
+    const fc = computeCalc({ ...o, freezes }).list.find(x => x >= d);
+    if (fc !== d) say(`Внимание: ${fmt(d)} по графику клиента готовки нет${dayOff(o, d) ? ' — ' + dayOff(o, d) : ''}. Первая готовка будет ${fc !== undefined ? `<b>${fmt(fc)}</b>, доставка ${rideText(fc, o.time)}` : '—'} — проверьте`, null, 'warn');
+    else if (dayOff(o, d + 1)) say(`Внимание: ${fmt(d)} готовим на ${fmt(d + 1)}, а ${fmt(d + 1)} у клиента ${dayOff(o, d + 1)} — проверьте`, null, 'warn');
+  };
   for (const ch of changes || []) {
     const v = String(ch.value ?? ch.text ?? '').trim();
     // «Ответственный Асиф» под именем клиента — смена ответственного, даже если ИИ принял это за пожелание
@@ -1278,39 +1289,45 @@ function planChatEdit(cl, changes) {
         break;
       case 'cook_from': {
         if (ch.done) break; // уже учтено в заморозке («заморозка 17.11, готовка 18.11»)
-        const d = dn(ch.date || v) + 1; // «готовка 18.11» — фасовка 18-го готовит на 19-е: доставка с 19-го
+        const d = dn(ch.date || v); // «готовка 18.11» — 18-го готовим (на 19.11)
         if (!Number.isFinite(d)) { say('Не понял дату «на готовку»', null, 'warn'); break; }
         const o = os.find(x => x.freezes.some(f => dn(f.from) <= d && d <= dn(f.to))) || main || lastOrderOf(cl);
-        if (!o) { say(`Доставка с ${fmt(d)}: заказов нет — оформите заказ`, null, 'warn'); break; }
+        if (!o) { say(`Готовка с ${fmt(d)}: заказов нет — оформите заказ`, null, 'warn'); break; }
         const k = calc(o), fz = o.freezes.find(f => dn(f.from) <= d && d <= dn(f.to));
-        if (o.stopped) say(`Доставка с ${fmt(d)}: заказ завершён возвратом ${fmt(dn(o.stopped))} — возобновите в карточке`, null, 'warn');
+        if (o.stopped) say(`Готовка с ${fmt(d)}: заказ завершён возвратом ${fmt(dn(o.stopped))} — возобновите в карточке`, null, 'warn');
         else if (fz) {
-          say(`Готовка <b>${fmt(d - 1)}</b> (на ${fmt(d)}): снять заморозку (была ${fmt(dn(fz.from))} — ${dn(fz.to) - dn(fz.from) > 730 ? 'бессрочно' : fmt(dn(fz.to))})`, () => {
+          const nf = d - 1 < dn(fz.from) ? o.freezes.filter(f => f !== fz) : o.freezes.map(f => (f === fz ? { ...f, to: isoOf(d - 1) } : f));
+          say(`Готовка снова <b>${fmt(d)}</b> (доставка ${rideText(d, o.time)}): снять заморозку (была ${fmt(dn(fz.from))} — ${dn(fz.to) - dn(fz.from) > 730 ? 'бессрочно' : fmt(dn(fz.to))})`, () => {
             const wasIndef = dn(fz.to) - dn(fz.from) > 730;
-            if (d - 1 < dn(fz.from)) o.freezes = o.freezes.filter(f => f !== fz); else fz.to = isoOf(d - 1);
+            o.freezes = nf;
             if (wasIndef) unfreezeCourier(o, d);
             touch(o);
           });
-        } else if (k.start > TODAY && k.start !== d) say(`Доставка с <b>${fmt(d)}</b>: перенести начало заказа ${fmt(k.start)} → ${fmt(d)}`, () => { o.start = isoOf(d); touch(o); });
-        else if (d > k.end) say(`Доставка с ${fmt(d)}: заказ закончился ${fmt(k.end)} — нужно продление («↻ Продлить» в карточке)`, null, 'warn');
-        else if (k.set.has(d) || k.start === d) say(`Доставка с ${fmt(d)}: уже стоит в готовке — менять нечего`, null, 'muted');
-        else say(`Доставка с ${fmt(d)}: по графику заказа это не день доставки — проверьте дни доставки`, null, 'warn');
+          cookWarn(o, d, nf);
+        } else if (k.start > TODAY && k.start !== d) { say(`Первая готовка <b>${fmt(d)}</b> (доставка ${rideText(d, o.time)}): перенести начало заказа ${fmt(k.start)} → ${fmt(d)}`, () => { o.start = isoOf(d); touch(o); }); cookWarn({ ...o, start: isoOf(d) }, d, o.freezes); }
+        else if (d > k.end) say(`Готовка с ${fmt(d)}: заказ закончился ${fmt(k.end)} — нужно продление («↻ Продлить» в карточке)`, null, 'warn');
+        else if (k.set.has(d) || k.start === d) say(`Готовка ${fmt(d)}: уже стоит в готовке — менять нечего`, null, 'muted');
+        else cookWarn(o, d, o.freezes);
         break;
       }
       case 'freeze': {
-        // даты в чате — дни ФАСОВКИ: «заморозка 17.11» — 17-го не готовим на 18-е (нет доставки 18-го);
-        // «готовка 18.11» рядом — 18-го снова готовим на 19-е, значит без доставки по 18-е включительно
+        // даты в чате — дни ГОТОВКИ: «заморозка 17.11» — 17-го не готовим (нет доставки на 18.11);
+        // «готовка 19.11» рядом — 19-го снова готовим на 20.11, значит без готовки 17.11–18.11
         const cook = (changes || []).find(c => c.type === 'cook_from' && Number.isFinite(dn(c.date || c.value)));
-        const a = dn(ch.from || v) + 1;
-        let b = ch.to ? dn(ch.to) + 1 : NaN;
-        if (cook && dn(cook.date || cook.value) + 1 > a) { b = dn(cook.date || cook.value); cook.done = true; }
+        const a = dn(ch.from || v);
+        let b = ch.to ? dn(ch.to) : NaN; // последний день без готовки
+        if (cook && dn(cook.date || cook.value) > a) { b = dn(cook.date || cook.value) - 1; cook.done = true; }
         if (!Number.isFinite(a)) { say('Не понял даты заморозки', null, 'warn'); break; }
         if (!main) { say('Заморозка: действующего заказа нет', null, 'warn'); break; }
-        say(Number.isFinite(b) ? `Заморозка: фасовка не готовит с <b>${fmt(a - 1)}</b>${cook && cook.done ? `, готовка снова <b>${fmt(b)}</b> (на ${fmt(b + 1)})` : ''} — без доставки <b>${a === b ? fmt(a) : fmt(a) + ' — ' + fmt(b)}</b>`
-          : `Остановить: фасовка не готовит с <b>${fmt(a - 1)}</b> (без доставки с ${fmt(a)}) на неопределённый срок`, () => {
-          main.freezes = normFreezes([...main.freezes, { from: isoOf(a), to: isoOf(Number.isFinite(b) && b >= a ? b : a + INDEF_DAYS) }]);
+        const fin = Number.isFinite(b) && b >= a;
+        const nf = normFreezes([...main.freezes, { from: isoOf(a), to: isoOf(fin ? b : a + INDEF_DAYS) }]);
+        const span = (x, y) => (x === y ? fmt(x) : fmt(x) + ' — ' + fmt(y));
+        say(fin ? `Заморозка: не готовим <b>${span(a, b)}</b> (нет доставки на ${span(a + 1, b + 1)}), готовка снова <b>${fmt(b + 1)}</b> (доставка ${rideText(b + 1, main.time)})`
+          : `Остановить: не готовим с <b>${fmt(a)}</b> (нет доставки на ${fmt(a + 1)} и дальше) на неопределённый срок`, () => {
+          main.freezes = nf;
           touch(main);
         });
+        if (fin) cookWarn(main, b + 1, nf);
         break;
       }
       case 'time': {
@@ -1368,7 +1385,7 @@ function planChatNew(a, existing) {
   const rows = [
     existing ? `Клиент уже есть в базе — <b>${esc(existing.name)}</b> (${esc(STATUS[CINFO.get(existing.id).status].toLowerCase())}): оформлю ему новый заказ` : `Новый клиент: <b>${esc(a.name)}</b>, тел. ${esc(a.phone || '—')}`,
     existing ? '' : `Адрес: ${addrHtml(a.address || '—').replace(/\n/g, '<br>')}`,
-    `Программа <b>${esc(progLabel(x.program) || '—')}</b>, ${x.days || '—'} дн.${daysTpl ? ' (по шаблону программы)' : ''}, 1-я готовка <b>${x.start ? fmt(dn(x.start)) : '—'}</b>, ${x.time}, дни: ${x.weekdays.every(Boolean) ? 'все, без выходных' : WD.filter((_, i) => x.weekdays[i]).join(' ')}`,
+    `Программа <b>${esc(progLabel(x.program) || '—')}</b>, ${x.days || '—'} дн.${daysTpl ? ' (по шаблону программы)' : ''}, 1-я готовка <b>${x.start ? fmt(dn(x.start)) : '—'}</b>${x.start ? ` (первая доставка ${rideText(dn(x.start), x.time)})` : ''}, ${x.time}, дни: ${x.weekdays.every(Boolean) ? 'все, без выходных' : WD.filter((_, i) => x.weekdays[i]).join(' ')}`,
     `Аллерген / исключения: ${x.allergen ? `<b>${esc(x.allergen)}</b>` : '—'}`,
     `Ответственный: ${x.manager ? esc(x.manager) : 'не указан в сообщении — назначьте в карточке'}${a.manager && !x.manager ? ` («${esc(a.manager)}» нет среди сотрудников)` : ''} · курьер не указан — назначьте в карточке`,
   ].filter(Boolean).map(t => ({ t, cls: '' }));
@@ -1558,7 +1575,7 @@ function openChatEdits() {
   • "other" {text}: другая просьба — коротко, что просят.
 - Новый клиент (в сообщении программа или калораж, количество дней, дата, телефон, адрес) — kind "new":
   phone — как написано; address — все строки про место (адрес, ориентир, ссылка на карту, КПП, подъезд, организация) как написано, через \\n;
-  program — калорийность числом («Стандарт 1800 ккал» → "1800") или название программы; days — число; start — дата 1-й готовки (дата в сообщении);
+  program — калорийность числом («Стандарт 1800 ккал» → "1800") или название программы; days — число; start — дата ПЕРВОЙ ГОТОВКИ: обычно дата в самом низу сообщения нового клиента («19.11» → start 19.11, первая доставка будет на 20.11); дату бери как написано, ничего не прибавляй и не вычитай;
   time — «утро» или «вечер»; days_off — выходные дни списком из ["ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС"] ([] если «выходные нет»);
   allergen — аллергены, исключения, замены блюд как написано; manager — ТОЛЬКО если в сообщении прямо написано, кто ответственный («ответственный Асиф», «отв.: Алина»), иначе пусто (автор сообщения — не ответственный).
   Оплату и суммы («к оплате») не бери.
@@ -1660,7 +1677,7 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
         <input class="input mt" type="time" name="timeAt" value="${esc(v.timeAt)}" style="width:140px" hidden></div>
       <label class="field"><span>Постоянный курьер</span><input class="input" name="courier" list="dl-couriers" value="${esc(v.courier)}" ${can('couriers.assign') ? '' : 'disabled title="Нет права назначать курьеров"'}></label>
       <label class="field"><span>Ответственный</span><input class="input" name="manager" list="dl-managers" value="${esc(v.manager || operator())}"></label>
-      <label class="field"><span>Дата 1-й доставки *</span><input class="input" type="date" name="start" value="${esc(start)}"></label>
+      <label class="field"><span>Дата первой готовки *</span><input class="input" type="date" name="start" value="${esc(start)}"></label>
       <div class="field"><span>Кол-во дней доставки *</span><div class="row">
         <input class="input" type="number" min="1" max="400" name="days" value="${v.days}" style="width:90px">
         ${[7, 14, 21, 30].map(n => `<button type="button" class="btn btn-sm" data-m="days" data-n="${n}">${n}</button>`).join('')}</div></div>
@@ -1799,7 +1816,7 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
           p.className = k.open ? 'warn mt' : 'preview mt';
           p.innerHTML = k.list.length
             ? `Выбрано ${k.list.length} из ${x.days} дат: ${k.list.slice(0, 14).map(fmtS).join(', ')}${k.list.length > 14 ? '…' : ''}`
-              + (k.open ? `<br>Осталось выбрать ${k.remaining} — программа напомнит.` : `<br>Последняя доставка: <b>${fmt(k.end)}</b>`)
+              + (k.open ? `<br>Осталось выбрать ${k.remaining} — программа напомнит.` : `<br>Последняя готовка: <b>${fmt(k.end)}</b> (доставка ${rideText(k.end, x.time)})`)
             : `Даты пока не выбраны (${x.days} дн.) — нажмите «Выбрать даты» или выберите позже: программа напомнит.`;
           return;
         }
@@ -1811,7 +1828,8 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
           acc += st.days;
           return `${esc(st.label)}: ${a !== undefined ? fmtS(a) : '—'}–${b !== undefined ? fmtS(b) : '—'}`;
         }).join(' → ') : '';
-        p.innerHTML = `Доставки: <b>${fmt(k.start)}</b> — <b>${fmt(k.end)}</b> (${WD_FULL[wdOf(k.end)]}), ${x.days} дн. · ${esc(orderDaysText(x))}`
+        p.innerHTML = `Готовка: <b>${fmt(k.start)}</b> — <b>${fmt(k.end)}</b> (${WD_FULL[wdOf(k.end)]}), ${x.days} дн. · ${esc(orderDaysText(x))}`
+          + (k.list.length ? `<br>Первая доставка: <b>${rideText(k.list[0], k.shifts[0] || x.time)}</b> · последняя: <b>${rideText(k.end, k.shifts[k.shifts.length - 1] || x.time)}</b>` : '')
           + (order && order.freezes.length ? ' · с учётом заморозок' : '') + stg
           + (x.persons ? ` · ${x.persons} чел.` : '') + (x.timeAt ? `<br>К ${esc(x.timeAt)}, фасовка ${x.time === 'утро' ? 'накануне' : 'в этот же день'}` : '');
       };
@@ -2468,10 +2486,14 @@ function openStop(o) {
     openModal({
       title: '▶ Возобновить — ' + (cl ? cl.name : ''),
       body: `<div class="muted">Питание остановлено с ${fmt(dn(indef.from))} на неопределённый срок. Оставшиеся дни (${o.days - k.list.length}) продолжатся с выбранной даты.</div>
-        <div class="form mt"><label class="field"><span>Возобновить доставку с</span>
-          <input class="input" type="date" name="day" value="${isoOf(Math.max(TODAY + 1, dn(indef.from)))}"></label></div>`,
+        <div class="form mt"><label class="field"><span>Первая готовка после паузы</span>
+          <input class="input" type="date" name="day" value="${isoOf(Math.max(TODAY + 1, dn(indef.from)))}"></label></div>
+        <div class="preview mt" id="rsPreview"></div>`,
       foot: '<button class="btn" data-act="closeModal">Отмена</button><button class="btn btn-green" data-m="save">▶ Возобновить</button>',
       onMount(root) {
+        const preview = () => { const d = dn(root.querySelector('[name="day"]').value); if (Number.isFinite(d)) $('#rsPreview', root).innerHTML = `Готовим ${fmt(d)} — первая доставка <b>${rideText(d, o.time)}</b>`; };
+        root.addEventListener('input', preview);
+        preview();
         $('[data-m="save"]', root).addEventListener('click', () => {
           const d = dn(root.querySelector('[name="day"]').value);
           if (!Number.isFinite(d)) return;
@@ -2479,7 +2501,7 @@ function openStop(o) {
           unfreezeCourier(o, d);
           touch(o);
           closeModal();
-          commit(`Возобновлено питание: ${cl?.name || ''} с ${fmt(d)}`, 'freeze');
+          commit(`Возобновлено питание: ${cl?.name || ''} — готовка с ${fmt(d)}, доставка ${rideText(d, o.time)}`, 'freeze');
           toast('Возобновлено. Окончание: ' + fmt(calc(o).end), 'ok');
         });
       },
@@ -2490,7 +2512,7 @@ function openStop(o) {
     title: 'Остановить — ' + (cl ? cl.name : ''),
     body: `<div class="muted">Питание ставится на паузу <b>на неопределённый срок</b> — оставшиеся дни сохраняются, клиент переходит в «НЕ ПИТАЕТСЯ» с пометкой «заморожен на неопр. срок».
         Возобновить можно в любой момент этой же кнопкой. Если клиент отказался совсем — нажмите «↩ Возврат».</div>
-      <div class="form mt"><label class="field"><span>Без доставки начиная с</span>
+      <div class="form mt"><label class="field"><span>Не готовим начиная с</span>
         <input class="input" type="date" name="day" value="${isoOf(Math.max(TODAY + 1, k.start))}"></label></div>
       <div class="preview mt" id="stPreview"></div>`,
     foot: `<button class="btn" data-act="closeModal">Отмена</button><button class="btn btn-green" data-m="save">Остановить</button>`,
@@ -2499,7 +2521,8 @@ function openStop(o) {
         const d = root.querySelector('[name="day"]').value;
         if (!d) return;
         const got = countLE(k.list, dn(d) - 1);
-        $('#stPreview', root).innerHTML = `До остановки будет доставлено <b>${got}</b> из ${o.days} дн., сохранится <b>${o.days - got}</b> дн.`;
+        const last = k.list[got - 1];
+        $('#stPreview', root).innerHTML = `До остановки будет приготовлено <b>${got}</b> из ${o.days} дн.${last !== undefined ? ` (последняя доставка ${rideText(last, k.shifts[got - 1])})` : ''}, сохранится <b>${o.days - got}</b> дн.`;
       };
       root.addEventListener('input', preview);
       $('[data-m="save"]', root).addEventListener('click', () => {
@@ -2915,7 +2938,7 @@ function delivNewsBody() {
     const head = `<span class="muted small">${esc(fmtStamp(x.at))}${x.who ? ' · ' + esc(x.who) : ''}</span>`;
     const res = x.done ? `<div class="muted small">${{ keep: '✓ курьер оставлен', no: '✗ курьер не оставлен', ok: '✓ просмотрено' }[x.done.how] || ''}${x.done.who ? ' · ' + esc(x.done.who) : ''}</div>` : '';
     const btn = (act, l, cls = '') => x.done ? '' : `<button class="btn btn-sm ${cls}" data-act="${act}" data-id="${esc(x.id)}">${l}</button>`;
-    if (x.kind === 'unfreeze') return `<div class="addr-news-it">${nm} вышел из заморозки (доставка с ${fmt(dn(x.from))}). ${head}
+    if (x.kind === 'unfreeze') return `<div class="addr-news-it">${nm} вышел из заморозки (готовка с ${fmtS(dn(x.from))}, первая доставка ${rideText(dn(x.from), ORDERS.get(x.oid)?.time || 'утро')}). ${head}
       <div>${x.cour ? `Курьер <b>${esc(x.cour)}</b>. Оставить?` : 'Курьера не было — назначьте.'}</div>
       ${x.done ? res : !x.cour ? `<div class="row mt" style="gap:6px">${btn('dnOk', 'Понятно')}</div>`
         : can('couriers.assign') ? `<div class="row mt" style="gap:6px">${btn('dnKeep', 'Да', 'btn-green') + btn('dnNo', 'Нет')}</div>` : '<div class="muted small">ждёт решения старшего курьера</div>'}</div>`;
@@ -3341,13 +3364,15 @@ function packKey(r, indiv) {
 function batchRows(E) {
   return deliveriesOn(E - 1).map(r => (r.o.time === 'утро' ? { ...r, bd: E } : r));
 }
+// порядок программ как в «Фасовке»: стандарт по калоражу, потом свои кухни (индивы, Sirtfood…), корпоративные в конце
+function packKeyCmp(a, b) { const x = kitchenRank(a), y = kitchenRank(b); return isCorp(a) - isCorp(b) || (x >= 0) - (y >= 0) || x - y || progCmp(a, b); }
 function packingGroups(D, time = 'all') {
   let rows = batchRows(D);
   if (time !== 'all') rows = rows.filter(r => r.o.time === time);
   const indiv = indivPrograms();
   for (const r of rows) r.vstage = virtualStage(r);
   const g = groupBy(rows, r => packKey(r, indiv));
-  const keys = [...g.keys()].sort((a, b) => { const x = kitchenRank(a), y = kitchenRank(b); return isCorp(a) - isCorp(b) || (x >= 0) - (y >= 0) || x - y || progCmp(a, b); });
+  const keys = [...g.keys()].sort(packKeyCmp);
   let n = 0;
   return keys.map(k => {
     const list = g.get(k).sort((a, b) => (a.vstage?.i ?? 0) - (b.vstage?.i ?? 0)
@@ -3549,7 +3574,10 @@ function endingData() {
     if (k.end >= TODAY && k.end <= TODAY + h && !isRenewed(o)) soon.push(o);
     else if (k.end < TODAY && k.end >= TODAY - 14 && !isRenewed(o)) lost.push(o);
   }
-  const byName = (a, b) => ruCmp(CLIENTS.get(a.clientId).name, CLIENTS.get(b.clientId).name);
+  // по ответственному (без ответственного — в конце), внутри — по программам как в «Фасовке», потом по ФИО клиента
+  const indiv = indivPrograms(), pk = o => (indiv.has(String(o.program).toLowerCase()) ? INDIV : String(o.program || '—'));
+  const byName = (a, b) => (!a.manager - !b.manager) || ruCmp(a.manager || '', b.manager || '') || packKeyCmp(pk(a), pk(b))
+    || ruCmp(CLIENTS.get(a.clientId).name, CLIENTS.get(b.clientId).name);
   soon.sort((a, b) => calc(a).end - calc(b).end || byName(a, b));
   lost.sort((a, b) => calc(b).end - calc(a).end || byName(a, b));
   return { soon, lost };
@@ -3579,7 +3607,11 @@ async function pdgPng() {
   const list = endingData().soon.filter(o => calc(o).end === TODAY);
   try { await document.fonts.ready; } catch { /* шрифт по умолчанию */ }
   const F = '"Montserrat", "Segoe UI", Arial, sans-serif';
-  const cols = [['№', 40], ['ФИО', 240], ['Телефон', 120], ['Программа', 250], ['Период', 120], ['Дней', 56], ['Ответственный', 150], ['Курьер', 130]];
+  // цвета — как тема программы: ночная (тёмная) или дневная
+  const dark = document.body.classList.contains('dark');
+  const P = dark ? { bg: '#1e222a', ink: '#e6e9ee', muted: '#9ca3ad', head: '#262b34', base: [30, 34, 42], mix: 0.22, sep: '#15181d', prog: ['#1f3a2d', '#8fd17a'], box: '#3a2427', red: '#ff6b5f', empty: '#6b7280' }
+    : { bg: '#ffffff', ink: '#1d1d1b', muted: '#6f6f6a', head: '#f3f4f1', base: [255, 255, 255], mix: 0.16, sep: '#ffffff', prog: ['#eaf4e3', '#3f7f25'], box: '#fde8e7', red: '#d64541', empty: '#9a9d98' };
+  const cols = [['№', 40], ['ФИО', 260], ['Программа', 250], ['Период', 120], ['Дней', 56], ['Ответственный', 150], ['Курьер', 130]];
   const W = 40 + cols.reduce((a, c) => a + c[1], 0), rowH = 40, headH = 150;
   const H = headH + 38 + Math.max(1, list.length) * rowH + 60;
   const cv = document.createElement('canvas');
@@ -3587,7 +3619,7 @@ async function pdgPng() {
   cv.width = W * sc; cv.height = H * sc;
   const g = cv.getContext('2d');
   g.scale(sc, sc);
-  g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H);
+  g.fillStyle = P.bg; g.fillRect(0, 0, W, H);
   const text = (t, x, y, font, color, maxW) => {
     g.font = font; g.fillStyle = color;
     let s = String(t ?? '');
@@ -3597,47 +3629,50 @@ async function pdgPng() {
   };
   const rrect = (x, y, w, h, r, fill) => { g.beginPath(); g.roundRect(x, y, w, h, r); g.fillStyle = fill; g.fill(); };
   // логотип с листиком
-  const lw = text('ели-худели', 20, 48, `700 30px ${F}`, '#1d1d1b');
+  const lw = text('ели-худели', 20, 48, `700 30px ${F}`, P.ink);
   g.save(); g.translate(20 + lw * 0.63, 14); g.scale(0.7, 0.7);
   g.fillStyle = '#5da83c'; g.fill(new Path2D('M4 20C4 10 10 4 21 3c0 11-6 17-15 17z')); g.restore();
-  text('Сегодня последний день', 20, 96, `500 26px ${F}`, '#1d1d1b');
-  text(`${fmtLong(TODAY)}${S.eMan ? ' · ' + S.eMan : ''} · позвонить и предложить продление`, 20, 124, `400 14px ${F}`, '#6f6f6a');
-  rrect(W - 190, 26, 170, 64, 12, '#fde8e7');
-  const nw = text(String(list.length), W - 172, 66, `700 30px ${F}`, '#d64541');
-  text(list.length === 1 ? 'клиент' : 'клиентов', W - 172 + nw + 10, 64, `500 14px ${F}`, '#d64541');
+  text('Сегодня последний день', 20, 96, `500 26px ${F}`, P.ink);
+  text(`${fmtLong(TODAY)}${S.eMan ? ' · ' + S.eMan : ''} · позвонить и предложить продление`, 20, 124, `400 14px ${F}`, P.muted);
+  rrect(W - 190, 26, 170, 64, 12, P.box);
+  const nw = text(String(list.length), W - 172, 66, `700 30px ${F}`, P.red);
+  text(list.length === 1 ? 'клиент' : 'клиентов', W - 172 + nw + 10, 64, `500 14px ${F}`, P.red);
   g.fillStyle = '#5da83c'; g.fillRect(20, headH - 12, W - 40, 3);
   let x = 20, y = headH;
-  g.fillStyle = '#fafbf8'; g.fillRect(20, y, W - 40, 34);
-  for (const [t, w] of cols) { text(t.toUpperCase(), x + 8, y + 22, `600 11px ${F}`, '#6f6f6a'); x += w; }
+  g.fillStyle = P.head; g.fillRect(20, y, W - 40, 34);
+  for (const [t, w] of cols) { text(t.toUpperCase(), x + 8, y + 22, `600 11px ${F}`, P.muted); x += w; }
   y += 38;
-  if (!list.length) text('Сегодня никто не заканчивает', 28, y + 26, `500 16px ${F}`, '#6f6f6a');
+  if (!list.length) text('Сегодня никто не заканчивает', 28, y + 26, `500 16px ${F}`, P.muted);
   list.forEach((o, i) => {
     const cl = CLIENTS.get(o.clientId), k = calc(o);
-    if (i % 2) { g.fillStyle = '#fafbf8'; g.fillRect(20, y, W - 40, rowH); }
+    // строка в цвет ответственного, как на странице «Продления» (цвет поверх фона темы)
+    const mc = String(o.manager ? personColor('managers', o.manager) : '#9a9d98').replace('#', ''), mix = j => Math.round(P.base[j / 2] + (parseInt(mc.slice(j, j + 2), 16) - P.base[j / 2]) * P.mix);
+    g.fillStyle = /^[0-9a-f]{6}$/i.test(mc) ? `rgb(${mix(0)},${mix(2)},${mix(4)})` : P.head; g.fillRect(20, y, W - 40, rowH);
     const cy = y + 25;
     let cx = 20;
-    const cell = (val, w, font = `400 14px ${F}`, color = '#1d1d1b') => { text(val, cx + 8, cy, font, color, w - 14); cx += w; };
+    const cell = (val, w, font = `400 14px ${F}`, color = P.ink) => { text(val, cx + 8, cy, font, color, w - 14); cx += w; };
     const pill = (val, w, fill, color) => {
       g.font = `600 12.5px ${F}`;
       let s = String(val || '—'); while (s.length > 1 && g.measureText(s).width > w - 30) s = s.slice(0, -2) + '…';
       const tw = g.measureText(s).width;
       if (val) rrect(cx + 6, y + 9, tw + 16, 23, 7, fill);
-      text(s, cx + 14, cy, `600 12.5px ${F}`, val ? color : '#9a9d98');
+      text(s, cx + 14, cy, `600 12.5px ${F}`, val ? color : P.empty);
       cx += w;
     };
-    const tone = (kind, name) => { const c = personColor(kind, name); return [c + '26', c]; };
-    cell(i + 1, cols[0][1], `400 13px ${F}`, '#6f6f6a');
+    // ночью — светлая плашка с цветным именем, как на странице
+    const tone = (kind, name) => { const c = personColor(kind, name), h = String(c).replace('#', ''), w = j => Math.round(255 + (parseInt(h.slice(j, j + 2), 16) - 255) * 0.22);
+      return dark && /^[0-9a-f]{6}$/i.test(h) ? [`rgb(${w(0)},${w(2)},${w(4)})`, c] : [c + '26', c]; };
+    cell(i + 1, cols[0][1], `400 13px ${F}`, P.muted);
     cell(cl.name, cols[1][1], `600 14px ${F}`);
-    cell(phoneShort(cl.phone), cols[2][1]);
-    pill(progLabel(o.program), cols[3][1], '#eaf4e3', '#3f7f25');
-    cell(`${fmtS(k.start)} – ${fmtS(k.end)}`, cols[4][1]);
-    cell(o.days, cols[5][1]);
-    pill(o.manager, cols[6][1], ...tone('managers', o.manager));
-    pill(o.courier, cols[7][1], ...tone('couriers', o.courier));
-    g.fillStyle = '#f0f0ec'; g.fillRect(20, y + rowH - 1, W - 40, 1);
+    pill(progLabel(o.program), cols[2][1], ...P.prog);
+    cell(`${fmtS(k.start)} – ${fmtS(k.end)}`, cols[3][1]);
+    cell(o.days, cols[4][1]);
+    pill(o.manager, cols[5][1], ...tone('managers', o.manager));
+    pill(o.courier, cols[6][1], ...tone('couriers', o.courier));
+    g.fillStyle = P.sep; g.fillRect(20, y + rowH - 1, W - 40, 1);
     y += rowH;
   });
-  text(`Ели-Худели · сформировано ${fmtStamp(localIso())}`, 20, H - 22, `400 11px ${F}`, '#9a9d98');
+  text(`Ели-Худели · сформировано ${fmtStamp(localIso())}`, 20, H - 22, `400 11px ${F}`, P.empty);
   const blob = await new Promise(res => cv.toBlob(res, 'image/png'));
   let copied = false;
   try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); copied = true; } catch { /* буфер недоступен */ }
@@ -4118,13 +4153,22 @@ function viewMenus() {
   <div class="row" style="margin-bottom:14px"><input class="input search" data-bind="mxq" placeholder="Поиск: имя клиента или калораж, например 1200" value="${esc(S.mxq || '')}" style="max-width:420px">
     <span class="muted small" id="mxCount">${cards.length ? `показано ${cards.filter(shown).length} из ${cards.length}` : ''}</span></div>
   ${cards.length ? `<div class="mx-grid">${cards.map(c => `<div class="mx-it" data-q="${esc(c.q)}" ${shown(c) ? '' : 'hidden'}><div class="mx-f">${esc(c.f.name)}</div>
-    <div class="mc-preview ink-${menuInk()} th-${menuTheme()}">${c.html}</div></div>`).join('')}</div>`
+    <div class="mc-preview"><div class="mx-card pdf-a5 ink-${menuInk()} th-${menuTheme()}">${c.html}</div></div></div>`).join('')}</div>
+    <style>${MENU_A5_CSS.replace(/@page[^}]*}/, '')}</style>`
     : '<div class="card empty">На эту дату меню ещё не написано или клиентов нет</div>'}`;
 }
+// «Меню»: карточка — настоящий лист A5, как у клиента, уменьшенный под ширину колонки
+function fitMx() {
+  const W = 148 * 96 / 25.4;
+  $$('.mx-it:not([hidden]) .mx-card').forEach(c => { c.style.zoom = c.parentElement.clientWidth / W; });
+  fitMenuCards(document);
+}
+window.addEventListener('resize', () => { if (S.view === 'menus') fitMx(); });
 function mxFilter() {
   const w = nameKey(S.mxq || '').split(' ').filter(Boolean);
   let n = 0;
   $$('.mx-it').forEach(el => { const ok = w.every(x => el.dataset.q.includes(x)); el.hidden = !ok; n += ok; });
+  fitMx();
   const c = $('#mxCount');
   if (c) c.textContent = $$('.mx-it').length ? `показано ${n} из ${$$('.mx-it').length}` : '';
 }
@@ -5528,7 +5572,7 @@ function openKbjuText(f, oid = '') {
     const md = menuVariant(D, f.id, r.variant, false), cd = menuClient(D, f.id, r.o.id, false);
     return clientMeals(f, r.cl).map(m => ({ m, text: String(cd.d[m.id] || '').trim() || md.d[m.id] || mainDish(D, m.name, f) || '' }));
   };
-  const HOW = { meal: 'приём указан', dish: 'по блюду', order: 'по порядку — проверьте', extra: 'новый доп — добавлю клиенту' };
+  const HOW = { meal: 'приём указан', dish: 'по блюду', order: 'по порядку — проверьте', sense: 'по смыслу — проверьте', extra: 'новый доп — добавлю клиенту' };
   const sumOf = list => [0, 1, 2, 3].map(i => r10(list.reduce((a, x) => (x.k[i] === '' ? a : (a === '' ? 0 : a) + x.k[i]), '')));
   const preview = () => {
     const gs = st.groups;
@@ -5588,7 +5632,9 @@ ${rows.map((r, i) => `${i + 1}: ${r.cl.name}\n${menus[i].map((x, j) => `   ${j +
   • иначе ищи блюдо в меню клиента по смыслу (одно блюдо приёма может быть записано отдельно: «Трайфл» и «Фрукты» — части комплимента «Трайфл с арахисом; Фруктовая нарезка») — how "dish";
   • блюда нет в меню — определи приём по порядку записей: текст обычно идёт по приёмам; запись стоит между записями уже найденных приёмов — бери подходящий приём из меню между ними (свободный, у которого своей записи нет; напиток рядом с десертом — тот же приём) — how "order";
   • в записи назван доп-приём («Доп. ужин», «доп ланч», «Перекус»), которого нет в меню клиента — meal пиши словами, например "Доп. ужин";
-  • совсем не понять — meal 0.
+  • у приёмов клиента нет блюд или блюда не совпадают — раскладывай по смыслу, как диетолог: завтрак — омлет, каша, сырники, яйца, блины, тост к завтраку; комплимент — фрукты, ягоды, йогурт, лёгкий десерт; обед — суп или сытное горячее; ланч — лёгкое блюдо, салат, сэндвич, тост, ролл; ужин — горячее (мясо, рыба, птица); гарнир (рис, гречка, булгур, пюре, макароны, овощи на гарнир) — в тот же приём, что горячее рядом с ним в тексте (обычно стоит после него); в один приём можно отнести несколько блюд;
+  • блюдо, которое по смыслу не подходит ни к одному приёму клиента или лишнее (все подходящие приёмы уже заняты), — meal "Перекус";
+  • совсем не понять — meal "Перекус".
 - Числа бери ровно как в тексте (знак ≈ не важен), ничего не пересчитывай и не придумывай; чего нет — null.
 Текст:
 """
@@ -5631,7 +5677,7 @@ ${st.text.trim()}
         }).filter(Boolean);
         const stems = t => low(t).split(/[^a-zа-я]+/).filter(w => w.length >= 4).map(w => w.slice(0, 5));
         // насколько уверенно: приём назван в записи / блюдо есть в меню приёма / ни то ни другое — поставлено по порядку
-        const howOf = (name, dm) => (low(name).includes(low(dm.m.name)) ? 'meal' : stems(name).some(w => stems(dm.text).includes(w)) ? 'dish' : 'order');
+        const howOf = (name, dm) => (low(name).includes(low(dm.m.name)) ? 'meal' : !dm.text.trim() ? 'sense' : stems(name).some(w => stems(dm.text).includes(w)) ? 'dish' : 'order');
         const targeted = new Set(items.filter(x => x.dm).map(x => x.r.o.id + '|' + x.dm.m.id));
         const seen = new Map(), groups = new Map(), skipped = [], last = new Map();
         for (const x of items) {
@@ -5656,7 +5702,7 @@ ${st.text.trim()}
           const g = groups.get(key);
           g.dishes.push(x.name);
           g.parts.push({ k: x.k });
-          const RANK = ['meal', 'extra', 'dish', 'order'];
+          const RANK = ['meal', 'extra', 'dish', 'sense', 'order'];
           if (RANK.indexOf(how) > RANK.indexOf(g.how)) g.how = how; // в группе — самое неуверенное
         }
         // порядок — как приёмы в меню клиента
@@ -5678,6 +5724,7 @@ ${st.text.trim()}
         if (g.extra) clientExtraAdd(f, g.r.cl, g.extra); // новый доп у клиента: «Доп. ужин»
         const cd = menuClient(D, f.id, g.r.o.id, true);
         (cd.k = cd.k || {})[g.meal.id] = g.k;
+        if (!g.menu.trim()) (cd.d = cd.d || {})[g.meal.id] = g.dishes.join('\n'); // в приёме не было блюд — вписываем блюда из текста
         who.set(g.r.o.id, g.r);
       }
       for (const r of who.values()) markClientKbjuManual(D, f, r.o.id, r.variant);
@@ -8603,6 +8650,7 @@ const VIEWS = {
 function render() {
   if (!canView(S.view)) S.view = firstView();
   $('#view').innerHTML = (VIEWS[S.view] || viewClients)();
+  if (S.view === 'menus') fitMx();
   if (S.view === 'handoff' || S.view === 'save') startAsif();
   $$('[data-nav]').forEach(a => a.classList.toggle('active', (a.dataset.nav === S.view || (['save', 'handoff'].includes(S.view) && a.dataset.nav === 'cloud')) && a.tagName === 'A' && !a.classList.contains('logo')));
   renderOperator();
