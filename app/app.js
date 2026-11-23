@@ -6028,7 +6028,6 @@ function adminSettingsCards() {
       <div class="actions"><button class="btn btn-sm" data-act="backupNow">Сделать резервную копию</button>
         <button class="btn btn-sm" data-act="nav" data-view="cloud">Облако и файлы базы →</button></div>
     </div>
-    ${devRemovedCard()}
     ${can('installer') ? '' : '<!--'}<div class="card"><h2>Установщик программы</h2>
       <div class="muted small" style="margin-bottom:10px">Готовый установщик для другого компьютера: выберите роль (в установленной программе её не поменять), данные и ключи.
         На новом компьютере ничего дополнительно ставить не нужно.</div>
@@ -6794,6 +6793,7 @@ function viewManager() {
   return `
   <div class="page-head"><h1>Журнал управляющей</h1><div class="spacer"></div><button class="btn btn-red" data-act="wipeBase">Стереть всю базу</button></div>
   ${devicesCard()}
+  ${devRemovedCard()}
   ${sceneCard()}
   <div class="page-head" style="display:none"><div class="sub">кому добавляли и отнимали дни, удаления, действия задним числом и ночью</div></div>
   <div class="stats">
