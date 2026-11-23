@@ -3010,7 +3010,7 @@ function courierBaseChoose(kind) {
     },
   });
 }
-const courierBaseName = (d, t) => `База Ташкент курьеров (${t === 'вечер' ? 'ВЕЧЕР' : 'УТРО'}) ${fmt(d)}`;
+const courierBaseName = (d, t) => `База Курьеров ${t === 'вечер' ? 'ВЕЧЕР' : 'УТРО'} ${fmt(d).slice(0, 6) + fmt(d).slice(8)}`; // «База Курьеров УТРО 23.11.26»
 // курьеры по алфавиту («Без курьера» — в конце); у курьера — программы по калоражу (1200, 1800 … Fasting), в программе — по ФИО
 function courierRows(d, t) {
   return courierGroups(deliveriesOn(cookDay(d, t)).filter(r => r.o.time === t)); // «УТРО 24.11» — пакеты фасовки 23.11
