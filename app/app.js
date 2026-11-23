@@ -528,7 +528,8 @@ function rebuild() {
 /* ---------------------------------------------------------------- замены курьеров
    Основной курьер в заказе не меняется. Правило: кто заменяет (to) — за основного курьера (from) у всех его клиентов
    или только в одном заказе (oid); когда — по дням недели (можно в пределах дат), на период подряд или в отдельные даты.
-   Правило одного заказа сильнее правила на всех клиентов курьера; из одинаковых — последнее добавленное. */
+   Правило одного заказа сильнее правила на всех клиентов курьера; из одинаковых — последнее добавленное.
+   shift: '' — все доставки, 'утро' / 'вечер' — только доставки этой смены. */
 const WD_NAMES = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 const subsList = () => db.settings.courierSubs || [];
 function subHits(r, D) {
@@ -537,10 +538,17 @@ function subHits(r, D) {
   if ((r.start && iso < r.start) || (r.end && iso > r.end)) return false;
   return r.kind === 'range' || !!(r.wd || [])[wdOf(D)];
 }
-function courierOn(o, D) {
+// D — день в заказе (день фасовки): вечерний пакет курьер везёт в тот же вечер, утренний — на следующее утро.
+// Замены и «Смена доставки» задаются по дню, когда курьер везёт, — поэтому утро сдвигаем на +1.
+const rideDay = (D, t) => (t === 'утро' ? D + 1 : D);
+const cookDay = (P, t) => (t === 'утро' ? P - 1 : P);
+function courierOn(o, D, t = o.time) {
+  const P = rideDay(D, t);
+  const day = o.courDays && o.courDays[isoOf(P) + '|' + t]; // «Смена доставки» клиента — сильнее любых замен
+  if (day) return day;
   let own = null, all = null;
   for (const r of subsList()) {
-    if (!subHits(r, D)) continue;
+    if (!subHits(r, P) || (r.shift && r.shift !== t)) continue;
     if (r.oid) { if (r.oid === o.id) own = r; } else if (r.from === (o.courier || '')) all = r;
   }
   return (own || all)?.to ?? o.courier;
@@ -548,9 +556,10 @@ function courierOn(o, D) {
 const subLive = r => (r.kind === 'dates' ? (r.dates || []).some(d => d >= isoOf(TODAY)) : !r.end || r.end >= isoOf(TODAY));
 const isoPeriod = (s, e) => (s || e ? ` (${s ? 'с ' + fmtS(dn(s)) : ''}${e ? ' по ' + fmtS(dn(e)) : ''})` : '');
 function subText(r) {
-  if (r.kind === 'dates') return (r.dates || []).map(d => fmtS(dn(d))).join(', ');
-  if (r.kind === 'range') return `${fmtS(dn(r.start))} – ${fmtS(dn(r.end))}`;
-  return wdText(r.wd) + (r.start || r.end ? isoPeriod(r.start, r.end) : ', постоянно');
+  const sh = r.shift === 'утро' ? ' · только утренние' : r.shift === 'вечер' ? ' · только вечерние' : '';
+  if (r.kind === 'dates') return (r.dates || []).map(d => fmtS(dn(d))).join(', ') + sh;
+  if (r.kind === 'range') return `${fmtS(dn(r.start))} – ${fmtS(dn(r.end))}` + sh;
+  return wdText(r.wd) + (r.start || r.end ? isoPeriod(r.start, r.end) : ', постоянно') + sh;
 }
 // курьеры в работе: есть заказ, который идёт, будет или закончился меньше месяца назад, или замена;
 // остальные (из старой Excel-истории) — только по галочке «и старые курьеры». Всегда по алфавиту.
@@ -593,7 +602,7 @@ function deliveriesOn(D) {
     if (!cl) continue;
     const hi = countLE(k.list, D), lo = countLE(k.list, D - 1);
     for (let j = 0; j < hi - lo; j++) {
-      const no = lo + j + 1, t = k.shifts[lo + j], cour = courierOn(o, D), addr = addrOn(cl, D);
+      const no = lo + j + 1, t = k.shifts[lo + j], cour = courierOn(o, D, t), addr = addrOn(cl, D);
       let oo = t === o.time ? o : { ...o, time: t };
       if (cour !== o.courier) oo = { ...oo, courier: cour };
       out.push({ o: oo, cl: addr !== cl.address ? { ...cl, address: addr } : cl, no, total: o.days, first: no === 1, last: no === k.list.length, prog: cookProgram(o, no), stage: stageAt(o, no),
@@ -669,7 +678,7 @@ function audit(text, { sev = 'info', kind = 'other', cid = '', days = 0 } = {}) 
   const now = new Date();
   const night = now.getHours() >= 23 || now.getHours() < 6;
   db.audit = db.audit || [];
-  db.audit.push({ at: localIso(), who: operator(), role: role(), kind, cid, days, text: text + (night ? ' (ночью)' : ''), sev: night ? 'warn' : sev });
+  db.audit.push({ at: localIso(), who: operator(), role: realRole(), kind, cid, days, text: text + (night ? ' (ночью)' : ''), sev: night ? 'warn' : sev });
   if (db.audit.length > 5000) db.audit = db.audit.slice(-5000);
 }
 function addLog(text, type) {
@@ -2186,11 +2195,15 @@ function shiftRulesText(o) {
 function openFreeze(o, mode = 'range') {
   const cl = CLIENTS.get(o.clientId);
   const onlyShifts = !can('clients.edit'); // старший курьер: только смены доставки, заморозки ему не меняем
+  // офис-менеджер меняет утро/вечер, старший курьер ещё и ставит курьера на пакет (инициал на клетке)
+  const canShift = can('clients.edit') || can('clients.shift'), canCour = can('couriers.assign');
+  const curNames = courierNames(o.courier), abbr = courAbbr(curNames);
   if (onlyShifts) mode = 'shifts';
   const orig = calc(o);
   const st = {
     mode, anchor: null, hover: null,
-    freezes: o.freezes.map(f => ({ ...f })), skips: o.skips.slice(), dayTimes: { ...(o.dayTimes || {}) }, paint: 'mfull', painting: false, last: null,
+    freezes: o.freezes.map(f => ({ ...f })), skips: o.skips.slice(), dayTimes: { ...(o.dayTimes || {}) }, paint: canShift ? 'mfull' : 'c:' + (curNames.find(n => n !== o.courier) || o.courier || ''), painting: false, last: null,
+    courDays: { ...(o.courDays || {}) }, cshift: 'both',
     month: monthStartDn(Math.max(TODAY, orig.start)),
   };
   const ranges = () => normFreezes(st.freezes).map(f => [dn(f.from), dn(f.to)]);
@@ -2198,6 +2211,16 @@ function openFreeze(o, mode = 'range') {
   // закрасить день выбранной кистью: утро (вся ячейка / левая половина), вечер (вся ячейка / правая половина), ластик
   const paintDay = d => {
     const iso = isoOf(d), cur = st.dayTimes[iso], t = st.paint;
+    if (t.startsWith('c:')) { // кисть-курьер: на пакеты этого дня; хранится по дню, когда курьер везёт (утро — назавтра)
+      const who = t.slice(2);
+      for (const x of uniq(packetsOn({ ...o, dayTimes: st.dayTimes }, d)).filter(x => st.cshift === 'both' || x === st.cshift)) {
+        if (rideDay(d, x) < TODAY) continue;
+        const key = isoOf(rideDay(d, x)) + '|' + x;
+        if (who) st.courDays[key] = who; else delete st.courDays[key];
+      }
+      return;
+    }
+    if (!canShift) return;
     if (t === 'erase') { delete st.dayTimes[iso]; return; }
     const eff = cur === 'both' || cur === 'one' ? ['утро', 'вечер'] : cur ? [cur] : dayAllowed(o, d) ? [o.time] : [];
     let M = eff.includes('утро'), E = eff.includes('вечер');
@@ -2219,11 +2242,16 @@ function openFreeze(o, mode = 'range') {
       if (d >= pend.start && d <= pend.end) cls.push('in');
       if (pend.set.has(d) && st.mode !== 'shifts') cls.push('dl');
       let nums = pend.set.has(d) ? countLE(pend.list, d) : '';
+      let ci = '';
       if (st.mode === 'shifts') { // цвет дня: жёлтый — утро, коричневый — вечер, пополам — оба (2 пакета)
         const ov = st.dayTimes[isoOf(d)], lo = countLE(pend.list, d - 1), hi = countLE(pend.list, d);
         const sh = pend.set.has(d) ? pend.shifts.slice(lo, hi) : ov ? packetsOn({ ...o, dayTimes: st.dayTimes }, d) : [];
         const mm = sh.includes('утро'), ee = sh.includes('вечер');
         if ((mm || ee) && !fz) cls.push(mm && ee ? 'sh-b' : mm ? 'sh-m' : 'sh-e', ...(pend.set.has(d) ? [] : ['ghost']), ...(ov ? ['ov'] : []));
+        if ((mm || ee) && !fz) ci = uniq(sh).map(x => {
+          const n = courierOn({ ...o, courDays: st.courDays }, d, x) || '', own = !!st.courDays[isoOf(rideDay(d, x)) + '|' + x];
+          return `<b class="ci${own ? ' own' : ''}" style="background:${n ? personColor('couriers', n) : '#d64541'}" title="${x === 'утро' ? 'утро ' + fmtS(d + 1) : 'вечер ' + fmtS(d)}: ${esc(n || 'без курьера')}">${esc(n ? abbr(n) : '?')}</b>`;
+        }).join('');
         if (pend.set.has(d)) nums = sh.length > 1 ? `${lo + 1}·${lo + sh.length}` : lo + 1;
       }
       if (fz) cls.push('fz');
@@ -2236,7 +2264,7 @@ function openFreeze(o, mode = 'range') {
       if (sel && d >= sel[0] && d <= sel[1]) cls.push('sel');
       const no = nums;
       cells += `<button type="button" class="${cls.join(' ')}" data-day="${d}" title="${fmt(d)}, ${WD_FULL[wdOf(d)]}${no ? ' · доставка №' + no : ''}${fz ? ' · заморозка' : ''}">
-        <span>${new Date(d * DAY).getUTCDate()}</span>${fz ? '<i></i>' : no ? `<i>${no}</i>` : ''}</button>`;
+        <span>${new Date(d * DAY).getUTCDate()}</span>${fz ? '<i></i>' : no ? `<i>${no}</i>` : ''}${ci ? `<em class="ci-w">${ci}</em>` : ''}</button>`;
     }
     return `<div class="cal-m"><div class="cal-title">${MONTHS_FULL[d0.getUTCMonth()]} ${d0.getUTCFullYear()}</div>
       <div class="cal-g">${WD.map(w => `<span class="cal-h">${w}</span>`).join('')}${cells}</div></div>`;
@@ -2269,7 +2297,12 @@ function openFreeze(o, mode = 'range') {
         </div>
       </div>
       <div class="cal-hint">${hint}</div>
-      ${st.mode === 'shifts' ? `<div class="row paint-tools">${PAINTS.map(([v, l, c]) => `<button class="paint-btn ${c} ${st.paint === v ? 'on' : ''}" data-cm="paint" data-v="${v}" title="${l}"><i class="pb ${c}"></i>${l}</button>`).join('')}</div>` : ''}
+      ${st.mode === 'shifts' && canCour ? `<div class="cal-hint"><b>Курьер:</b> выберите курьера и нажимайте на дни — его инициал появится на пакете.
+        ☀ утренний пакет курьер везёт на следующее утро, ☾ вечерний — в тот же вечер. Постоянный курьер — <b>${esc(o.courier || 'не назначен')}</b>.</div>
+      <div class="row paint-tools"><div class="chips">${[['both', 'Все пакеты дня'], ['утро', '☀ Утро'], ['вечер', '☾ Вечер']].map(([v, l]) => `<button class="${st.cshift === v ? 'on' : ''}" data-cm="cshift" data-v="${v}">${l}</button>`).join('')}</div>
+        ${curNames.map(n => `<button class="paint-btn ${st.paint === 'c:' + n ? 'on' : ''}" data-cm="paint" data-v="c:${esc(n)}"><i class="pb ci-pb" style="background:${personColor('couriers', n)}">${esc(abbr(n))}</i>${esc(n)}${n === o.courier ? ' (постоянный)' : ''}</button>`).join('')}
+        <button class="paint-btn ${st.paint === 'c:' ? 'on' : ''}" data-cm="paint" data-v="c:"><i class="pb"></i>Курьер как обычно</button></div>` : ''}
+      ${st.mode === 'shifts' && canShift ? `<div class="row paint-tools">${PAINTS.map(([v, l, c]) => `<button class="paint-btn ${c} ${st.paint === v ? 'on' : ''}" data-cm="paint" data-v="${v}" title="${l}"><i class="pb ${c}"></i>${l}</button>`).join('')}</div>` : ''}
       <div class="cal">${monthHtml(st.month, pend, rs, skipSet)}${monthHtml(addMonthsDn(st.month, 1), pend, rs, skipSet)}</div>
       <div class="cal-legend">${st.mode === 'shifts' ? '<span><i class="lg sh-m"></i>утро</span><span><i class="lg sh-e"></i>вечер</span><span><i class="lg sh-b"></i>утро + вечер (2 пакета)</span>' : '<span><i class="lg dl"></i>доставка (№ дня)</span>'}<span><i class="lg fz"></i>заморозка</span>
         <span><i class="lg wo"></i>нет доставки по дню недели</span><span><i class="lg end"></i>последний день</span><span><i class="lg today"></i>сегодня</span></div>
@@ -2344,6 +2377,7 @@ function openFreeze(o, mode = 'range') {
         if (onlyShifts && ['mode', 'delRange', 'delSkip', 'unfreeze', 'clearFuture'].includes(cm)) return;
         if (cm === 'mode') { st.mode = b.dataset.v; st.anchor = null; st.hover = null; }
         else if (cm === 'paint') st.paint = b.dataset.v;
+        else if (cm === 'cshift') st.cshift = b.dataset.v;
         else if (cm === 'cancel') { st.anchor = null; st.hover = null; }
         else if (cm === 'month') st.month = +b.dataset.v === 0 ? monthStartDn(TODAY) : addMonthsDn(st.month, +b.dataset.v);
         else if (cm === 'delRange') { const rs = ranges(); rs.splice(+b.dataset.i, 1); setRanges(rs); }
@@ -2355,19 +2389,23 @@ function openFreeze(o, mode = 'range') {
         } else if (cm === 'save') {
           const nf = normFreezes(st.freezes);
           const shChanged = JSON.stringify(st.dayTimes) !== JSON.stringify(o.dayTimes || {});
-          if (JSON.stringify(nf) === JSON.stringify(normFreezes(o.freezes)) && st.skips.join() === o.skips.join() && !shChanged) { closeModal(); return; }
+          const cd = Object.fromEntries(Object.entries(st.courDays).filter(([k2, v]) => v && k2.slice(0, 10) >= isoOf(TODAY - 30)).sort());
+          const cdChanged = JSON.stringify(cd) !== JSON.stringify(o.courDays || {});
+          if (JSON.stringify(nf) === JSON.stringify(normFreezes(o.freezes)) && st.skips.join() === o.skips.join() && !shChanged && !cdChanged) { closeModal(); return; }
           const past = nf.filter(f => dn(f.from) < TODAY && !o.freezes.some(g => g.from === f.from && g.to === f.to));
           const endWas = calc(o).end;
           o.freezes = nf;
           o.skips = st.skips.slice().sort();
           if (Object.keys(st.dayTimes).length) o.dayTimes = { ...st.dayTimes }; else delete o.dayTimes;
+          if (Object.keys(cd).length) o.courDays = cd; else delete o.courDays;
           touch(o);
           const endNow = computeCalc(o).end;
           if (past.length || endNow !== endWas) audit(`Заморозка ${cl?.name || ''}: окончание ${fmt(endWas)} → ${fmt(endNow)}${past.length ? ' — заморозка задним числом с ' + fmt(dn(past[0].from)) : ''}`,
             { kind: 'freeze', cid: o.clientId, sev: past.length ? 'warn' : 'info' });
           closeModal();
           const desc = nf.length ? nf.map(f => `${fmt(dn(f.from))}–${fmt(dn(f.to))}`).join(', ') : 'нет';
-          commit(shChanged ? `Смены доставки изменены: ${cl?.name || ''} (${shiftRulesText(o) || 'как в заказе'}), окончание ${fmt(computeCalc(o).end)}`
+          const cdText = cdChanged ? `; курьеры: ${Object.keys(cd).length ? Object.entries(cd).filter(([k2]) => k2.slice(0, 10) >= isoOf(TODAY)).map(([k2, v]) => `${k2.slice(11)} ${fmtS(dn(k2.slice(0, 10)))} — ${v}`).join(', ') || 'как обычно' : 'как обычно'}` : '';
+          commit(shChanged || cdChanged ? `Смены доставки изменены: ${cl?.name || ''} (${shiftRulesText(o) || 'как в заказе'}${cdText}), окончание ${fmt(computeCalc(o).end)}`
             : `Заморозки изменены: ${cl?.name || ''} (${desc}), окончание ${fmt(computeCalc(o).end)}`);
           toast('Сохранено. Дата окончания: ' + fmt(calc(o).end), 'ok', 5000);
           return;
@@ -2811,7 +2849,7 @@ function openCourierMove() {
 function noteAddr(cl, from) {
   if (String(from || '').trim() === String(cl.address || '').trim()) return;
   const list = (db.settings.addrNews || []).filter(x => x.at >= isoOf(TODAY - 14));
-  list.push({ id: uid('an'), at: localIso(), who: operator(), role: role(), cid: cl.id, name: cl.name, from: String(from || ''), to: String(cl.address || '') });
+  list.push({ id: uid('an'), at: localIso(), who: operator(), role: realRole(), cid: cl.id, name: cl.name, from: String(from || ''), to: String(cl.address || '') });
   db.settings.addrNews = list.slice(-200);
 }
 const addrNewsSeen = () => { try { return JSON.parse(lsGet('eh_addr_seen') || '[]'); } catch { return []; } };
@@ -2904,11 +2942,11 @@ function viewDelivery() {
   // курьер в строке: постоянный меняется тут же (навсегда), временный — пометкой
   const courCell = r => `<td class="nowrap dl-cour" data-act="noop">${sel ? `<select class="input no-print" style="padding:3px 6px;max-width:150px" data-bind="dcour" data-id="${esc(r.o.id)}" title="Постоянный курьер — меняется навсегда"><option value="">— курьер —</option>${courOpts(mainCour(r))}</select>
       <span class="print-only">${esc(mainCour(r) || '—')}</span>` : chip('couriers', mainCour(r), NOCOUR())}${r.subFrom !== undefined ? `<div class="small">временно: ${chip('couriers', r.o.courier, 'без курьера')}</div>` : ''}</td>`;
-  const part = (list, t) => list.length ? `<tr class="group"><td colspan="${sel ? 10 : 9}">${t === 'вечер' ? 'ВЕЧЕР' : 'УТРО'} — ${list.length}</td></tr>`
+  const part = (list, t) => list.length ? `<tr class="group"><td colspan="${sel ? 10 : 9}">${t === 'вечер' ? 'ВЕЧЕР ' + fmtS(D) : 'УТРО ' + fmtS(D + 1)} — ${list.length}</td></tr>`
     + list.map((r, i) => `<tr class="click ${S.dsel.has(r.o.id) ? 'dsel-on' : ''}" data-act="openClient" data-id="${esc(r.cl.id)}" data-q="${esc(dqKey(r))}" ${hit(r) ? '' : 'hidden'}>
         ${sel ? `<td class="cb no-print" data-act="noop"><input type="checkbox" data-bind="dsel" data-id="${esc(r.o.id)}" ${S.dsel.has(r.o.id) ? 'checked' : ''} title="Выбрать — передать другому курьеру на время или навсегда"></td>` : ''}
         <td>${i + 1}</td><td class="name nowrap">${esc(r.cl.name)}${rowChips(r) ? `<div class="st2">${rowChips(r)}</div>` : ''}</td><td class="ph">${esc(r.cl.phone)}</td>
-        <td class="addr">${addrHtml(r.cl.address)}${r.addrTemp ? ' <span class="tag frozen">адрес на период</span>' : ''}${can('clients.address') ? ` <button class="btn btn-sm no-print" data-act="addrEdit" data-c="${esc(r.cl.id)}" title="Основной адрес, на период, по графику">✎ адрес</button>` : ''}${r.o.note ? `<div class="muted">${esc(r.o.note)}</div>` : ''}
+        <td class="addr">${addrHtml(r.cl.address)}${r.addrTemp ? ' <span class="tag frozen">адрес на период</span>' : ''}${can('clients.address') ? ` <button class="btn btn-sm no-print" data-act="addrEdit" data-c="${esc(r.cl.id)}" title="Основной адрес, на период, по графику">✎ адрес</button>` : ''}${can('clients.edit') || can('clients.shift') || can('couriers.assign') ? ` <button class="btn btn-sm no-print" data-act="shiftsOrder" data-id="${esc(r.o.id)}" title="Утро/вечер по дням и какой курьер везёт">Смена доставки</button>` : ''}${r.o.note ? `<div class="muted">${esc(r.o.note)}</div>` : ''}
           ${r.addrHint ? `<div class="addr-hint no-print">По графику${r.addrHint.note ? ' (' + esc(r.addrHint.note) + ')' : ''}: ${addrHtml(r.addrHint.address)}
             <button class="btn btn-sm" data-act="addrApply" data-c="${esc(r.cl.id)}" data-a="${esc(r.addrHint.id)}" data-d="${r.bd}">Применить на ${fmtS(r.bd)}</button></div>` : ''}</td>
         <td>${esc(progLabel(r.prog))}${stageNote(r)}</td>${courCell(r)}<td class="nowrap">${r.no}/${r.total}${dayTags(r)}</td><td class="nowrap">${chip('managers', r.o.manager, '—')}</td></tr>`).join('') : '';
@@ -2928,7 +2966,7 @@ function viewDelivery() {
   };
   return `${dvTabs()}<div class="dl-tools">
   <div class="page-head">
-    <h1>Доставка</h1><div class="sub">${esc(fmtLong(D))}</div><div class="spacer"></div>
+    <h1>Доставка</h1><div class="sub">${esc(fmtLong(D))} · пакеты этого дня: вечер ${fmtS(D)}, утро ${fmtS(D + 1)}</div><div class="spacer"></div>
     <div class="no-print row">${dateNav()}${timeChips()}</div>
   </div>
   <div class="row no-print" style="margin-bottom:12px">
@@ -2944,7 +2982,7 @@ function viewDelivery() {
   <div id="dselBar">${dselBar()}</div></div>
   ${addrNewsBox()}
   ${noCourier ? `<div class="warn no-print" style="margin-bottom:12px">${esc(NOCOUR())}: <b>${noCourier}</b> — выберите курьера в строке клиента или отметьте клиентов галочками → «Передать навсегда».</div>` : ''}
-  <div class="grid2 no-print" style="margin-bottom:6px">${sumCol(morning, 'Утро')}${sumCol(evening, 'Вечер')}</div>
+  <div class="grid2 no-print" style="margin-bottom:6px">${sumCol(morning, 'Утро ' + fmtS(D + 1))}${sumCol(evening, 'Вечер ' + fmtS(D))}</div>
   ${blocks || '<div class="card empty">На эту дату доставок нет</div>'}`;
 }
 
@@ -2975,7 +3013,7 @@ function courierBaseChoose(kind) {
 const courierBaseName = (d, t) => `База Ташкент курьеров (${t === 'вечер' ? 'ВЕЧЕР' : 'УТРО'}) ${fmt(d)}`;
 // курьеры по алфавиту («Без курьера» — в конце); у курьера — программы по калоражу (1200, 1800 … Fasting), в программе — по ФИО
 function courierRows(d, t) {
-  return courierGroups(deliveriesOn(d).filter(r => r.o.time === t));
+  return courierGroups(deliveriesOn(cookDay(d, t)).filter(r => r.o.time === t)); // «УТРО 24.11» — пакеты фасовки 23.11
 }
 function byProg(list) {
   const g = groupBy(list, r => r.prog);
@@ -3182,7 +3220,7 @@ ${list}
 function courierText(name, list, D) {
   const lines = [`Доставка ${fmt(D)} (${WD_FULL[wdOf(D)]}) — ${name}, пакетов: ${list.length}`, ''];
   list.forEach((r, i) => {
-    lines.push(`${i + 1}. ${r.cl.name} — ${firstLine(r.cl.phone)} — ${r.o.timeAt || r.o.time}`);
+    lines.push(`${i + 1}. ${r.cl.name} — ${firstLine(r.cl.phone)} — ${r.o.timeAt || r.o.time} ${fmtS(rideDay(D, r.o.time))}`); // утро — на следующий день
     if (r.cl.address) lines.push('   ' + r.cl.address.replace(/\n+/g, '\n   '));
     if (rowTags(r).length) lines.push('   ' + rowTags(r).map(t => t.name).join(' · '));
     if (r.o.note) lines.push('   ' + r.o.note);
@@ -3990,6 +4028,31 @@ function menuCardHtml(f, D, { variant = '', name = '', program = '', dishes = {}
   </div>`;
 }
 
+/* ---------------------------------------------------------------- «Меню»: просто посмотреть карточки меню на день
+   Для менеджеров: найти меню своего индивидуала (по имени) или стандарт на нужный калораж (например, «1200»). Ничего не меняет. */
+function viewMenus() {
+  const D = S.mxd ?? S.md;
+  const cards = db.menu.formats.flatMap(f => menuCards(f, D).map(html => ({ f, html, q: nameKey(`${f.name} ${html.replace(/<[^>]+>/g, ' ')}`) })));
+  const w = nameKey(S.mxq || '').split(' ').filter(Boolean), shown = c => w.every(x => c.q.includes(x));
+  return `<div class="page-head"><h1>Меню</h1><div class="sub">карточки меню на ${esc(fmtLong(D))} — как их получат клиенты</div><div class="spacer"></div>
+    <div class="row"><button class="btn btn-icon" data-act="mxShift" data-d="-1">‹</button>
+      <input type="date" class="input" data-bind="mxd" value="${isoOf(D)}">
+      <button class="btn btn-icon" data-act="mxShift" data-d="1">›</button>
+      <button class="btn btn-sm ${D === TODAY ? 'btn-green' : ''}" data-act="mxSet" data-d="0">Сегодня</button>
+      <button class="btn btn-sm ${D === TODAY + 1 ? 'btn-green' : ''}" data-act="mxSet" data-d="1">Завтра</button></div></div>
+  <div class="row" style="margin-bottom:14px"><input class="input search" data-bind="mxq" placeholder="Поиск: имя клиента или калораж, например 1200" value="${esc(S.mxq || '')}" style="max-width:420px">
+    <span class="muted small" id="mxCount">${cards.length ? `показано ${cards.filter(shown).length} из ${cards.length}` : ''}</span></div>
+  ${cards.length ? `<div class="mx-grid">${cards.map(c => `<div class="mx-it" data-q="${esc(c.q)}" ${shown(c) ? '' : 'hidden'}><div class="mx-f">${esc(c.f.name)}</div>
+    <div class="mc-preview ink-${menuInk()} th-${menuTheme()}">${c.html}</div></div>`).join('')}</div>`
+    : '<div class="card empty">На эту дату меню ещё не написано или клиентов нет</div>'}`;
+}
+function mxFilter() {
+  const w = nameKey(S.mxq || '').split(' ').filter(Boolean);
+  let n = 0;
+  $$('.mx-it').forEach(el => { const ok = w.every(x => el.dataset.q.includes(x)); el.hidden = !ok; n += ok; });
+  const c = $('#mxCount');
+  if (c) c.textContent = $$('.mx-it').length ? `показано ${n} из ${$$('.mx-it').length}` : '';
+}
 function viewMenu() {
   const D = S.md;
   const f = menuFormat(S.mf);
@@ -6631,7 +6694,9 @@ function lsSet(k, v) { try { localStorage.setItem(k, v); } catch { /* прива
 // имя из установщика главнее — роль и имя закреплены за установленной программой
 const operator = () => opResolve(S.local && S.local.operator) || (window.EHAndroid ? roleName() : lsGet('eh_operator') || db.settings.operator || '');
 // роль закреплена за установленной программой (задаётся установщиком), PIN-кодов нет
-const role = () => (S.local && S.local.role) || lsGet('eh_role') || 'om';
+const realRole = () => (S.local && S.local.role) || lsGet('eh_role') || 'om';
+// «👁 Проверить права»: управляющая или разработчик смотрят программу глазами роли или сотрудника (только в этом окне, до «Выйти»)
+const role = () => (S.asRole && S.asRole.role) || realRole();
 const isManager = () => role() === 'manager' || role() === 'developer';
 const lang = () => lsGet('eh_lang') || 'ru';
 async function sha(text) {
@@ -7620,7 +7685,12 @@ const ACT = {
     render();
   },
   dselClear: () => { S.dsel = new Set(); render(); },
-  dselSubs: () => openSubs('', { ids: [...S.dsel], dates: [isoOf(S.wd)] }),
+  dselSubs: () => {
+    const times = uniq(deliveriesOn(S.wd).filter(r => S.dsel.has(r.o.id)).map(r => r.o.time));
+    if (times.length > 1) { toast('Утренних и вечерних клиентов передайте по отдельности: утренних везут на следующий день', 'bad', 7000); return; }
+    const t = times[0] || 'вечер';
+    openSubs('', { ids: [...S.dsel], dates: [isoOf(rideDay(S.wd, t))], shift: t });
+  },
   dselMove: () => openCourierMove(),
   addrKeep: d => {
     const x = (db.settings.addrNews || []).find(y => y.id === d.id);
@@ -7644,6 +7714,8 @@ const ACT = {
   dcToggle: d => { S.dcs = S.dcs.includes(d.c) ? S.dcs.filter(x => x !== d.c) : [...S.dcs, d.c]; render(); },
   dcAll: () => { S.dcs = []; render(); },
   dvTab: d => { S.dv = d.v; render(); },
+  mxShift: d => { S.mxd = (S.mxd ?? S.md) + +d.d; render(); },
+  mxSet: d => { S.mxd = TODAY + +d.d; render(); },
   addrDel: d => {
     const cl = CLIENTS.get(d.c);
     if (!cl) return;
@@ -8101,6 +8173,8 @@ const BIND = {
   'cf.sort': (v, _el, t) => { if (t === 'change') { S.cf.sort = v; S.cf.dir = 1; render(); } },
   dc: (v, _el, t) => { if (t === 'change') { S.dc = v; render(); } },
   dq: v => { S.dq = v; dqFilter(); },
+  mxq: v => { S.mxq = v; mxFilter(); },
+  mxd: (v, _el, t) => { if (t === 'change' && v) { S.mxd = dn(v); render(); } },
   noCourName: (v, el, t) => {
     if (t !== 'change') return;
     v = v.trim().replace(/\s+/g, ' ');
@@ -8423,7 +8497,7 @@ const archiveMonths = () => Math.max(1, parseInt(db.settings.archiveMonths, 10) 
 
 const VIEWS = {
   clients: viewClients, delivery: viewDelivery, packing: viewPacking, ending: viewEnding,
-  stats: viewStats, menu: viewMenu, finance: viewFinance, salary: viewSalary, admin: viewAdmin, save: viewCloud, handoff: viewCloud, cloud: viewCloud, mine: viewMine, journal: viewJournal, incident: viewIncident, manager: viewManager,
+  stats: viewStats, menu: viewMenu, menus: viewMenus, finance: viewFinance, salary: viewSalary, admin: viewAdmin, save: viewCloud, handoff: viewCloud, cloud: viewCloud, mine: viewMine, journal: viewJournal, incident: viewIncident, manager: viewManager,
 };
 function render() {
   if (!canView(S.view)) S.view = firstView();
@@ -8443,7 +8517,7 @@ function go(view) {
 }
 
 /* ---------------------------------------------------------------- события */
-const TAB_NAMES = { mine: 'Мои доставки', clients: 'Клиенты', delivery: 'Доставка', packing: 'Фасовка', ending: 'Продления', stats: 'Статистика', menu: 'Меню дня', finance: 'Финансы', salary: 'Зарплата', incident: 'Неполадки', journal: 'Журнал' };
+const TAB_NAMES = { menus: 'Меню', mine: 'Мои доставки', clients: 'Клиенты', delivery: 'Доставка', packing: 'Фасовка', ending: 'Продления', stats: 'Статистика', menu: 'Меню дня', finance: 'Финансы', salary: 'Зарплата', incident: 'Неполадки', journal: 'Журнал' };
 document.addEventListener('contextmenu', e => {
   const a = e.target.closest('#nav [data-nav]');
   if (!a || NO_HIDE.includes(a.dataset.nav) || !can('admin.settings')) return;
@@ -8526,7 +8600,7 @@ setInterval(() => {
 // preset — из «Доставки»: { ids: заказы выбранных клиентов, dates: [дата] } — сразу «определённые клиенты» на эту доставку
 function openSubs(oid = '', preset = null) {
   const o = oid ? ORDERS.get(oid) : null, cl = o && CLIENTS.get(o.clientId);
-  const st = { kind: preset?.dates ? 'dates' : 'week', wd: [0, 0, 0, 0, 0, 0, 0], dates: (preset?.dates || []).slice(), who: preset?.ids ? 'some' : 'all', pick: new Set(preset?.ids || []) };
+  const st = { kind: preset?.dates ? 'dates' : 'week', wd: [0, 0, 0, 0, 0, 0, 0], dates: (preset?.dates || []).slice(), who: preset?.ids ? 'some' : 'all', pick: new Set(preset?.ids || []), shift: preset?.shift || '' };
   const from0 = preset?.ids ? (ORDERS.get(preset.ids[0])?.courier || '') : '';
   // клиенты курьера для «определённых»: идущий или будущий заказ, где он основной (и выбранные в «Доставке»)
   const pickList = from => {
@@ -8552,6 +8626,8 @@ function openSubs(oid = '', preset = null) {
         <div class="field full" id="subPickBox" hidden><span id="subPickHead">Клиенты</span>
           <input class="input search" id="subPickQ" placeholder="Поиск: ФИО, адрес" style="max-width:300px;margin-bottom:6px">
           <div class="sub-pick" id="subPick"></div></div>`}
+        <div class="field full"><span>Какие доставки</span><div class="chips" id="subShift">${[['', 'Все доставки'], ['утро', 'Заменить утренние доставки'], ['вечер', 'Заменить вечерние доставки']]
+    .map(([k, l]) => `<button type="button" data-sh="${k}" class="${k === st.shift ? 'on' : ''}">${l}</button>`).join('')}</div></div>
         <label class="field"><span>${o ? 'Временный курьер' : 'Кто заменяет'}</span><select class="input" name="to"><option value="">— выберите —</option>${courOpts('')}</select></label>
         <div class="field full"><span>Когда</span><div class="chips" id="subKind">${[['week', 'По дням недели'], ['range', 'На период'], ['dates', 'Отдельные даты']]
     .map(([k, l]) => `<button type="button" data-k="${k}" class="${k === st.kind ? 'on' : ''}">${l}</button>`).join('')}</div></div>
@@ -8592,6 +8668,7 @@ function openSubs(oid = '', preset = null) {
         const b = e.target.closest('button, a');
         if (!b || !root.contains(b)) return;
         if (b.dataset.w) { st.who = b.dataset.w; drawPick(); }
+        else if (b.dataset.sh !== undefined) { st.shift = b.dataset.sh; $$('#subShift button', root).forEach(x => x.classList.toggle('on', x.dataset.sh === st.shift)); }
         else if (b.dataset.k) { st.kind = b.dataset.k; show(); }
         else if (b.dataset.i !== undefined) { st.wd[+b.dataset.i] ^= 1; b.classList.toggle('on', !!st.wd[+b.dataset.i]); }
         else if (b.dataset.d) { st.dates = st.dates.filter(x => x !== b.dataset.d); show(); }
@@ -8609,7 +8686,7 @@ function openSubs(oid = '', preset = null) {
           if (!o && st.who === 'some') { // определённые клиенты: своя замена у каждого выбранного заказа
             const ids = [...st.pick].filter(id => ORDERS.get(id) && (ORDERS.get(id).courier || '') !== to);
             if (!ids.length) { toast('Отметьте клиентов', 'bad'); return; }
-            const at = localIso(), base = { to, kind: st.kind, wd: st.kind === 'week' ? st.wd.slice() : [], start: st.kind === 'dates' ? '' : s, end: st.kind === 'dates' ? '' : en, dates: st.kind === 'dates' ? st.dates.slice() : [], at };
+            const at = localIso(), base = { to, kind: st.kind, wd: st.kind === 'week' ? st.wd.slice() : [], start: st.kind === 'dates' ? '' : s, end: st.kind === 'dates' ? '' : en, dates: st.kind === 'dates' ? st.dates.slice() : [], shift: st.shift, at };
             db.settings.courierSubs = [...subsList(), ...ids.map(id => ({ ...base, id: uid('cs'), from: ORDERS.get(id).courier || '', oid: id }))];
             db.settings.courierSubsAt = localIso();
             closeModal();
@@ -8620,7 +8697,7 @@ function openSubs(oid = '', preset = null) {
             return;
           }
           const r = { id: uid('cs'), to, from, oid: only ? o.id : '', kind: st.kind, wd: st.kind === 'week' ? st.wd.slice() : [],
-            start: st.kind === 'dates' ? '' : s, end: st.kind === 'dates' ? '' : en, dates: st.kind === 'dates' ? st.dates.slice() : [], at: localIso() };
+            start: st.kind === 'dates' ? '' : s, end: st.kind === 'dates' ? '' : en, dates: st.kind === 'dates' ? st.dates.slice() : [], shift: st.shift, at: localIso() };
           db.settings.courierSubs = [...subsList(), r];
           db.settings.courierSubsAt = localIso();
           closeModal();
@@ -8633,6 +8710,11 @@ function openSubs(oid = '', preset = null) {
       drawPick();
     },
   });
+}
+// инициалы курьеров на календаре: самое короткое начало имени, которое не совпадает с другими («Бека» / «Бекз»)
+function courAbbr(names) {
+  const first = n => String(n).trim().split(/\s+/)[0];
+  return n => { const f = first(n); for (let k = 1; k < f.length; k++) { const pre = f.slice(0, k); if (!names.some(x => x !== n && first(x).startsWith(pre))) return pre; } return f.slice(0, 4); };
 }
 // когда действует дополнительный адрес — подпись для списков
 const addrWhen = x => (x.kind === 'temp' ? `${fmtS(dn(x.start))} – ${fmtS(dn(x.end || x.start))}` : `по графику: ${wdText(x.wd)}${isoPeriod(x.start, x.end)}`) + (x.note ? ' · ' + x.note : '');
