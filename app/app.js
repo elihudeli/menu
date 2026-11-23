@@ -1286,7 +1286,9 @@ function planChatEdit(cl, changes) {
         if (o.stopped) say(`Доставка с ${fmt(d)}: заказ завершён возвратом ${fmt(dn(o.stopped))} — возобновите в карточке`, null, 'warn');
         else if (fz) {
           say(`Готовка <b>${fmt(d - 1)}</b> (на ${fmt(d)}): снять заморозку (была ${fmt(dn(fz.from))} — ${dn(fz.to) - dn(fz.from) > 730 ? 'бессрочно' : fmt(dn(fz.to))})`, () => {
+            const wasIndef = dn(fz.to) - dn(fz.from) > 730;
             if (d - 1 < dn(fz.from)) o.freezes = o.freezes.filter(f => f !== fz); else fz.to = isoOf(d - 1);
+            if (wasIndef) unfreezeCourier(o, d);
             touch(o);
           });
         } else if (k.start > TODAY && k.start !== d) say(`Доставка с <b>${fmt(d)}</b>: перенести начало заказа ${fmt(k.start)} → ${fmt(d)}`, () => { o.start = isoOf(d); touch(o); });
@@ -1635,7 +1637,7 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
     start = isoOf(Math.max(lastEnd + 1, TODAY + 1));
   } else start = isoOf(TODAY + 1);
   const v = {
-    program: another ? '' : base.program || '', time: base.time || 'утро', courier: base.courier || '', manager: base.manager || '',
+    program: another ? '' : base.program || '', time: base.time || 'утро', courier: order ? order.courier || '' : '', manager: base.manager || '', // продление / ещё программа — курьера заново ставит старший курьер
     days: order ? order.days : another ? 7 : (base.days || 7), weekdays: (base.weekdays || [1, 1, 1, 1, 1, 1, 1]).slice(),
     allergen: base.allergen || '', note: order ? order.note : '',
     timeAt: base.timeAt || '', persons: base.persons || '', company: base.company || '',
@@ -2206,6 +2208,14 @@ function openFreeze(o, mode = 'range') {
     courDays: { ...(o.courDays || {}) }, cshift: 'both',
     month: monthStartDn(Math.max(TODAY, orig.start)),
   };
+  const sameObj = (a, b) => JSON.stringify(Object.entries(a || {}).sort()) === JSON.stringify(Object.entries(b || {}).sort());
+  const cdKeep = m => Object.fromEntries(Object.entries(m || {}).filter(([k2, v]) => v && k2.slice(0, 10) >= isoOf(TODAY - 30)).sort());
+  const pending = () => { // что изменено в окне и ещё не сохранено
+    const nf = normFreezes(st.freezes), cd = cdKeep(st.courDays);
+    const shChanged = !sameObj(st.dayTimes, o.dayTimes), cdChanged = !sameObj(cd, cdKeep(o.courDays));
+    const any = JSON.stringify(nf) !== JSON.stringify(normFreezes(o.freezes)) || st.skips.slice().sort().join() !== o.skips.slice().sort().join() || shChanged || cdChanged;
+    return { nf, shChanged, cd, cdChanged, any };
+  };
   const ranges = () => normFreezes(st.freezes).map(f => [dn(f.from), dn(f.to)]);
   const setRanges = rs => { st.freezes = normFreezes(rs.filter(([a, b]) => a <= b).map(([a, b]) => ({ from: isoOf(a), to: isoOf(b) }))); };
   // закрасить день выбранной кистью: утро (вся ячейка / левая половина), вечер (вся ячейка / правая половина), ластик
@@ -2322,6 +2332,16 @@ function openFreeze(o, mode = 'range') {
     badge: `<span class="tag">${esc(progLabel(o.program))} · ${o.days} дн. · ${esc(orderDaysText(o))}</span>`,
     body: '<div id="calBox"></div>',
     foot: `<button class="btn" data-act="closeModal">Отмена</button><button class="btn btn-green" data-cm="save">Сохранить</button>`,
+    beforeClose: m => {
+      if (!pending().any) return true;
+      openModal({ title: 'Изменения не сохранены', body: '<p>Вы уверены, что не хотите сохранить?</p>',
+        foot: '<button class="btn" data-m="no">Нет</button><button class="btn btn-green" data-m="yes">Сохранить</button>',
+        onMount(r) {
+          $('[data-m="no"]', r).addEventListener('click', () => { closeModal(); closeModal(); });
+          $('[data-m="yes"]', r).addEventListener('click', () => { closeModal(); $('[data-cm="save"]', m.back).click(); });
+        } });
+      return false;
+    },
     onMount(root) {
       draw(root);
       const stroke = (e, first) => {
@@ -2387,19 +2407,30 @@ function openFreeze(o, mode = 'range') {
           setRanges(ranges().filter(([a]) => a <= TODAY).map(([a, c]) => [a, Math.min(c, TODAY)]));
           st.skips = st.skips.filter(s => dn(s) <= TODAY);
         } else if (cm === 'save') {
-          const nf = normFreezes(st.freezes);
-          const shChanged = JSON.stringify(st.dayTimes) !== JSON.stringify(o.dayTimes || {});
-          const cd = Object.fromEntries(Object.entries(st.courDays).filter(([k2, v]) => v && k2.slice(0, 10) >= isoOf(TODAY - 30)).sort());
-          const cdChanged = JSON.stringify(cd) !== JSON.stringify(o.courDays || {});
-          if (JSON.stringify(nf) === JSON.stringify(normFreezes(o.freezes)) && st.skips.join() === o.skips.join() && !shChanged && !cdChanged) { closeModal(); return; }
+          const { nf, shChanged, cd, cdChanged, any } = pending();
+          if (!any) { closeModal(); return; }
           const past = nf.filter(f => dn(f.from) < TODAY && !o.freezes.some(g => g.from === f.from && g.to === f.to));
           const endWas = calc(o).end;
+          const isIndef = f => dn(f.to) - dn(f.from) > 730, oldIndef = normFreezes(o.freezes).find(isIndef);
+          const oldO = { ...o };
+          if (oldIndef && !nf.some(f => isIndef(f) && f.from === oldIndef.from)) unfreezeCourier(o, Math.max(TODAY + 1, dn((nf.find(f => f.from === oldIndef.from) || { to: isoOf(TODAY) }).to) + 1));
           o.freezes = nf;
           o.skips = st.skips.slice().sort();
           if (Object.keys(st.dayTimes).length) o.dayTimes = { ...st.dayTimes }; else delete o.dayTimes;
           if (Object.keys(cd).length) o.courDays = cd; else delete o.courDays;
           touch(o);
           const endNow = computeCalc(o).end;
+          if (shChanged && realRole() !== 'courier') { // новые пакеты (было утро — стало утро + вечер) везёт постоянный курьер; старшему курьеру — уведомление
+            const k2 = computeCalc(o), added = [];
+            for (const iso of uniq([...Object.keys(oldO.dayTimes || {}), ...Object.keys(o.dayTimes || {})]).sort()) {
+              const d = dn(iso);
+              if (d < TODAY || !k2.set.has(d)) continue;
+              const a = packetsOn(oldO, d);
+              for (const x of uniq(packetsOn(o, d))) if (!a.includes(x)) added.push(x === 'утро' ? '☀ утро ' + fmtS(d + 1) : '☾ вечер ' + fmtS(d));
+            }
+            if (added.length) noteDeliv({ kind: 'shift', cid: o.clientId, oid: o.id, name: cl?.name || '', cour: o.courier || '',
+              text: `По заказу ${o.time === 'вечер' ? 'ВЕЧЕР' : 'УТРО'}, добавлены пакеты: ${added.slice(0, 10).join(', ')}${added.length > 10 ? ` … (всего ${added.length})` : ''}` });
+          }
           if (past.length || endNow !== endWas) audit(`Заморозка ${cl?.name || ''}: окончание ${fmt(endWas)} → ${fmt(endNow)}${past.length ? ' — заморозка задним числом с ' + fmt(dn(past[0].from)) : ''}`,
             { kind: 'freeze', cid: o.clientId, sev: past.length ? 'warn' : 'info' });
           closeModal();
@@ -2445,6 +2476,7 @@ function openStop(o) {
           const d = dn(root.querySelector('[name="day"]').value);
           if (!Number.isFinite(d)) return;
           if (d - 1 < dn(indef.from)) o.freezes = o.freezes.filter(f => f !== indef); else indef.to = isoOf(d - 1);
+          unfreezeCourier(o, d);
           touch(o);
           closeModal();
           commit(`Возобновлено питание: ${cl?.name || ''} с ${fmt(d)}`, 'freeze');
@@ -2852,6 +2884,48 @@ function noteAddr(cl, from) {
   list.push({ id: uid('an'), at: localIso(), who: operator(), role: realRole(), cid: cl.id, name: cl.name, from: String(from || ''), to: String(cl.address || '') });
   db.settings.addrNews = list.slice(-200);
 }
+// корзина уведомлений «Доставке»: клиент вышел из заморозки, сменили смену доставки
+function noteDeliv(x) {
+  const list = (db.settings.delivNews || []).filter(y => y.at >= isoOf(TODAY - 14));
+  list.push({ id: uid('dn'), at: localIso(), who: operator(), role: realRole(), ...x });
+  db.settings.delivNews = list.slice(-300);
+}
+// вышел из заморозки на неопр. срок: курьер обнуляется (старший курьер видит «без курьера»), в «Доставке» — «Оставить прежнего?»
+function unfreezeCourier(o, d) {
+  const cl = CLIENTS.get(o.clientId), was = o.courier || (cl && cl.courier) || '';
+  o.courier = '';
+  if (cl && cl.courier) { cl.courier = ''; touch(cl); }
+  noteDeliv({ kind: 'unfreeze', cid: o.clientId, oid: o.id, name: cl?.name || '', cour: was, from: isoOf(d) });
+}
+const delivNewsAll = () => (db.settings.delivNews || []).filter(x => x.at >= isoOf(TODAY - 7) && x.role !== 'courier').reverse();
+// кнопка «Уведомления» в «Доставке»: ярко-красная, пока есть нерешённые
+function delivNewsBtn() {
+  const n = delivNewsAll().filter(x => !x.done).length;
+  return `<button class="btn ${n ? 'btn-alert' : ''}" data-act="delivNews">Уведомления${n ? ` <b class="alert-n">${n}</b>` : ''}</button>`;
+}
+function openDelivNews() {
+  openModal({ title: 'Уведомления', body: delivNewsBody(), foot: '<button class="btn" data-act="closeModal">Закрыть</button>',
+    refresh: m => { $('.body', m.back).innerHTML = delivNewsBody(); } });
+}
+function delivNewsBody() {
+  const all = delivNewsAll();
+  const open = all.filter(x => !x.done), done = all.filter(x => x.done);
+  const it = x => {
+    const nm = `<b class="click" data-act="openClient" data-id="${esc(x.cid)}">${esc(x.name)}</b>`;
+    const head = `<span class="muted small">${esc(fmtStamp(x.at))}${x.who ? ' · ' + esc(x.who) : ''}</span>`;
+    const res = x.done ? `<div class="muted small">${{ keep: '✓ курьер оставлен', no: '✗ курьер не оставлен', ok: '✓ просмотрено' }[x.done.how] || ''}${x.done.who ? ' · ' + esc(x.done.who) : ''}</div>` : '';
+    const btn = (act, l, cls = '') => x.done ? '' : `<button class="btn btn-sm ${cls}" data-act="${act}" data-id="${esc(x.id)}">${l}</button>`;
+    if (x.kind === 'unfreeze') return `<div class="addr-news-it">${nm} вышел из заморозки (доставка с ${fmt(dn(x.from))}). ${head}
+      <div>${x.cour ? `Курьер <b>${esc(x.cour)}</b>. Оставить?` : 'Курьера не было — назначьте.'}</div>
+      ${x.done ? res : !x.cour ? `<div class="row mt" style="gap:6px">${btn('dnOk', 'Понятно')}</div>`
+        : can('couriers.assign') ? `<div class="row mt" style="gap:6px">${btn('dnKeep', 'Да', 'btn-green') + btn('dnNo', 'Нет')}</div>` : '<div class="muted small">ждёт решения старшего курьера</div>'}</div>`;
+    return `<div class="addr-news-it">${nm}: смена доставки изменилась. ${head}
+      <div>${esc(x.text)}</div><div class="muted">Курьер на новые пакеты поставлен автоматически — постоянный: <b>${esc(x.cour || 'не назначен')}</b></div>
+      ${x.done ? res : `<div class="row mt" style="gap:6px">${btn('dnOk', 'Понятно')}</div>`}</div>`;
+  };
+  return `<div class="addr-news-list">${open.map(it).join('') || '<div class="muted">Новых уведомлений нет</div>'}
+    ${done.length ? `<details class="mt"><summary class="muted">Решённые за неделю (${done.length})</summary>${done.map(it).join('')}</details>` : ''}</div>`;
+}
 const addrNewsSeen = () => { try { return JSON.parse(lsGet('eh_addr_seen') || '[]'); } catch { return []; } };
 function addrNewsBox() {
   const seen = new Set(addrNewsSeen());
@@ -2977,6 +3051,7 @@ function viewDelivery() {
     <button class="btn" data-act="courierBase" data-k="png">Скриншот курьеров</button>
     <button class="btn" data-act="courierBase" data-k="xlsx">Excel «База курьеров»</button>
     <button class="btn" data-act="printPage">Печать</button>
+    ${delivNewsBtn()}
   </div>
   ${courierChips(D)}
   <div id="dselBar">${dselBar()}</div></div>
@@ -7210,6 +7285,11 @@ function mergeDb(a, b) {
     const y = out.settings.addrNews.find(z => z.id === x.id);
     if (!y) out.settings.addrNews.push(x); else if (x.done && !y.done) y.done = x.done;
   }
+  for (const x of b.settings.delivNews || []) {
+    out.settings.delivNews = out.settings.delivNews || [];
+    const y = out.settings.delivNews.find(z => z.id === x.id);
+    if (!y) out.settings.delivNews.push(x); else if (x.done && !y.done) y.done = x.done;
+  }
   if ((b.settings.newLblAt || '') > (out.settings.newLblAt || '')) { out.settings.newLbl = b.settings.newLbl; out.settings.newLblAt = b.settings.newLblAt; }
   if ((b.settings.kitchensAt || '') > (out.settings.kitchensAt || '')) { out.settings.kitchens = b.settings.kitchens; out.settings.kitchensAt = b.settings.kitchensAt; }
   if ((b.settings.currencyAt || '') > (out.settings.currencyAt || '')) { out.settings.currency = b.settings.currency; out.settings.currencyAt = b.settings.currencyAt; }
@@ -7709,6 +7789,27 @@ const ACT = {
       commit(`Изменён основной адрес: ${cl.name} — возвращён прежний`, 'deliv');
       toast('Прежний адрес возвращён', 'ok');
     }, false);
+  },
+  delivNews: () => openDelivNews(),
+  dnKeep: d => {
+    const x = (db.settings.delivNews || []).find(y => y.id === d.id), o = x && ORDERS.get(x.oid), cl = x && CLIENTS.get(x.cid);
+    if (!x) return;
+    if (o && !o.courier) { o.courier = x.cour; touch(o); }
+    if (cl && !cl.courier) { cl.courier = x.cour; touch(cl); }
+    x.done = { at: localIso(), who: operator(), how: 'keep' };
+    commit(`Курьер оставлен после заморозки: ${x.name} — ${x.cour}`, 'deliv');
+  },
+  dnNo: d => {
+    const x = (db.settings.delivNews || []).find(y => y.id === d.id);
+    if (!x) return;
+    x.done = { at: localIso(), who: operator(), how: 'no' };
+    commit(`Курьер после заморозки не оставлен: ${x.name} (был ${x.cour}) — назначьте нового`, 'deliv');
+  },
+  dnOk: d => {
+    const x = (db.settings.delivNews || []).find(y => y.id === d.id);
+    if (!x) return;
+    x.done = { at: localIso(), who: operator(), how: 'ok' };
+    commit(`Уведомление просмотрено: ${x.name}`, 'deliv');
   },
   addrNewsOk: () => { lsSet('eh_addr_seen', JSON.stringify((db.settings.addrNews || []).map(x => x.id))); render(); },
   dcToggle: d => { S.dcs = S.dcs.includes(d.c) ? S.dcs.filter(x => x !== d.c) : [...S.dcs, d.c]; render(); },
