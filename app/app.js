@@ -3949,9 +3949,12 @@ const menuVariants = f => (f.byStage && f.variants.length ? f.variants : ['']);
 const currentVariant = f => { const v = menuVariants(f); return v.includes(S.mv) ? S.mv : v[0]; };
 // в поле даты — день готовки: меню на следующий день (обычно) или на этот же («день в день»)
 const mdOff = f => (f.sameDay ? 0 : 1);
+// фасовка, к которой относится меню на дату D: у всех форматов — фасовка дня готовки (как в «Фасовке»);
+// «день в день» меняет только дату на меню (сегодняшняя), а клиенты — те же, что в фасовке этого дня готовки
+const menuPackDay = (D, f) => D - mdOff(f) + 1;
 function menuRowsFor(D, fid) {
   const f = menuFormat(fid);
-  return packingGroups(D).flatMap(([, l]) => l).filter(r => formatOfRow(r).id === f.id)
+  return packingGroups(menuPackDay(D, f)).flatMap(([, l]) => l).filter(r => formatOfRow(r).id === f.id)
     .map(r => ({ ...r, variant: variantOfRow(r, f) }));
 }
 
@@ -3990,7 +3993,7 @@ function menuCardHtml(f, D, { variant = '', name = '', program = '', dishes = {}
 function viewMenu() {
   const D = S.md;
   const f = menuFormat(S.mf);
-  const allRows = packingGroups(D).flatMap(([, l]) => l);
+  const allRows = packingGroups(menuPackDay(D, f)).flatMap(([, l]) => l);
   const counts = new Map();
   for (const r of allRows) { const id = formatOfRow(r).id; counts.set(id, (counts.get(id) || 0) + 1); }
   const rows = menuRowsFor(D, f.id);
