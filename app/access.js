@@ -5,7 +5,7 @@
 const PERM_GROUPS = [
   ['Разделы программы', [
     ['v.mine', 'Мои доставки (план курьера)'], ['v.clients', 'Клиенты'], ['v.delivery', 'Доставка'], ['v.packing', 'Фасовка'], ['v.ending', 'Продления'], ['v.stats', 'Статистика'],
-    ['v.menu', 'Меню дня'], ['v.finance', 'Финансы'], ['v.salary', 'Зарплата'], ['v.incident', 'Неполадки'], ['v.journal', 'Журнал'], ['v.manager', 'Журнал управляющей'], ['v.admin', 'Админ'],
+    ['v.menu', 'Меню дня'], ['v.menus', 'Меню (просмотр карточек)'], ['v.finance', 'Финансы'], ['v.salary', 'Зарплата'], ['v.incident', 'Неполадки'], ['v.journal', 'Журнал'], ['v.manager', 'Журнал управляющей'], ['v.admin', 'Админ'],
   ]],
   ['Что можно менять', [
     ['clients.edit', 'Клиенты и заказы: создавать, менять, замораживать, останавливать, возврат, удалять'],
@@ -49,7 +49,7 @@ function roleDefs() {
 }
 const roleName = (id = role()) => (roleDefs()[id] || roleDefs().om).name;
 // индивидуальные права устройства: управляющая разрешает или ограничивает сверх роли (журнал управляющей → «Устройства»)
-const devOverride = () => { const m = typeof S !== 'undefined' && S.sync && S.sync.me && S.sync.me.machine; return (m && db && (db.settings.devPerms || {})[m]) || null; };
+const devOverride = () => { const m = typeof S !== 'undefined' && (S.asRole ? S.asRole.machine : S.sync && S.sync.me && S.sync.me.machine); return (m && db && (db.settings.devPerms || {})[m]) || null; };
 function can(p) {
   if (!p) return true;
   const id = role();
@@ -70,7 +70,7 @@ const ACT_PERM = {
   newClient: 'clients.edit', newOrder: 'clients.edit', renewOrder: 'clients.edit', editOrder: 'clients.edit',
   findReturners: 'clients.edit', changeProg: 'clients.edit', transferDays: 'clients.edit', freezeOrder: 'clients.edit',
   // время и смены доставки: кто меняет заказы — может всегда, старший курьер — по праву «clients.shift»
-  shiftsOrder: () => (can('clients.edit') ? 'clients.edit' : 'clients.shift'), flipTime: () => (can('clients.edit') ? 'clients.edit' : 'clients.shift'), skipOrder: 'clients.edit', stopOrder: 'clients.edit', returnOrder: 'clients.edit', deleteOrder: 'clients.edit',
+  shiftsOrder: () => (can('clients.edit') ? 'clients.edit' : can('clients.shift') ? 'clients.shift' : 'couriers.assign'), flipTime: () => (can('clients.edit') ? 'clients.edit' : 'clients.shift'), skipOrder: 'clients.edit', stopOrder: 'clients.edit', returnOrder: 'clients.edit', deleteOrder: 'clients.edit',
   deleteClient: 'clients.edit', toggleTag: 'clients.edit', pickDays: 'clients.edit', remindNow: 'clients.edit', allowDel: 'clients.edit', mergeCombo: 'clients.edit',
   saveClient: () => (can('clients.edit') ? 'clients.edit' : 'clients.address'),
   bulkSet: d => (d.k === 'courier' ? 'couriers.assign' : 'clients.edit'),
@@ -99,7 +99,7 @@ const ACT_PERM = {
   cloudSave: 'cloud', cloudSwitch: 'cloud', cloudForce: 'cloud.force', menuSitePublish: 'cloud', cloudOff: 'cloud', cloudPublish: 'publish',
 };
 // эти действия ничего не меняют в базе — их можно делать, даже когда программа у другого
-const NONMUT = new Set(['dselAll', 'addrNewsOk', 'dselClear', 'dcToggle', 'dcAll', 'devicesLoad', 'devBlock', 'devPerms', 'setLang', 'setTheme', 'setZoom', 'theme', 'cloudBackupsLoad', 'cloudBackupNow', 'installerDialog', 'courierLink', 'copyCourier', 'courierBase', 'exportDelivery', 'labels', 'exportPacking', 'exportBoth', 'pdgPng', 'printPage', 'printPacking', 'menuPrint',
+const NONMUT = new Set(['mxShift', 'mxSet', 'rolePreview', 'asExit', 'dselAll', 'addrNewsOk', 'dselClear', 'dcToggle', 'dcAll', 'devicesLoad', 'devBlock', 'devPerms', 'setLang', 'setTheme', 'setZoom', 'theme', 'cloudBackupsLoad', 'cloudBackupNow', 'installerDialog', 'courierLink', 'copyCourier', 'courierBase', 'exportDelivery', 'labels', 'exportPacking', 'exportBoth', 'pdgPng', 'printPage', 'printPacking', 'menuPrint',
   'menuPrintAll', 'menuPdf', 'exportClients', 'clientsTemplate', 'exportJson', 'exportXlsx', 'openFolder', 'backupNow', 'makeInstaller', 'aiEditKey',
   'openMenuFiles', 'cloudSave', 'cloudSwitch', 'cloudForce', 'cloudOff', 'aiPick', 'gtFmt', 'gtSel', 'mcRec', 'cloudPublish']);
 const BIND_PERM = {
@@ -111,7 +111,7 @@ const BIND_PERM = {
   'set.menuUrl': 'admin.settings', 'set.archiveMonths': 'admin.settings', 'set.currency': 'admin.settings', 'set.adminPin': 'roles', handoffNote: 'files',
   permSet: 'roles', roleName: 'roles',
 };
-const BIND_NONMUT = new Set(['dsel', 'dq', 'quickPrint', 'backupMinutes', 'handoffNote', 'mink', 'mtheme', 'plang']);
+const BIND_NONMUT = new Set(['dsel', 'dq', 'mxq', 'mxd', 'quickPrint', 'backupMinutes', 'handoffNote', 'mink', 'mtheme', 'plang']);
 // курьеров может менять и старший курьер (право «Курьеры: добавлять, переименовывать, удалять»)
 function listPerm(d) { return d.k === 'couriers' && !can('admin.lists') ? 'couriers.list' : 'admin.lists'; }
 const permOfAct = (name, d) => { const p = ACT_PERM[name]; return typeof p === 'function' ? p(d || {}) : p; };
@@ -150,6 +150,8 @@ function applyPermsUI(root = document) {
   root.querySelectorAll('[data-perm]').forEach(el => {
     if (!can(el.dataset.perm)) { if (/INPUT|TEXTAREA|SELECT|BUTTON/.test(el.tagName)) el.disabled = true; else el.classList.add('perm-hide'); }
   });
+  const ab = $('#asBtn');
+  if (ab) { ab.hidden = !FULL_ROLES.includes(realRole()); ab.classList.toggle('on', !!S.asRole); }
   $$('#nav [data-nav]').forEach(a => { a.hidden = a.id === 'navMgr' ? !canView('manager') : !canView(a.dataset.nav); });
 }
 function startPermsUI() {
@@ -258,6 +260,8 @@ const ACCESS_ACT = {
       } catch (e) { toast('Не удалось: ' + e.message, 'bad', 8000); }
     }),
   setLang: d => { lsSet('eh_lang', d.v); location.reload(); },
+  rolePreview: () => openRolePreview(),
+  asExit: () => setRolePreview(null),
   setZoom: d => { lsSet('eh_zoom', d.v); applyPhoneZoom(); render(); },
   setTheme: d => { if (document.body.classList.contains('dark') !== (d.v === 'dark')) ACT.theme(); render(); },
   devPerms: d => {
@@ -511,7 +515,7 @@ async function syncTick() {
   if (st.pulled !== (prev ? prev.pulled : 0) && !dirty) await reloadFromServer(); // и первая база, пришедшая до первой проверки окна
   if (st.needMerge) await syncMerge(st.needMerge);
   pinCheck();
-  if (st.mode === 'owner' && !S.startBackup && ['om', 'manager', 'developer'].includes(role())) {
+  if (st.mode === 'owner' && !S.startBackup && ['om', 'manager', 'developer'].includes(realRole())) {
     S.startBackup = true;
     api('POST', '/api/sync/backup', JSON.stringify({ reason: 'start' })).catch(() => { S.startBackup = false; });
   }
@@ -974,7 +978,8 @@ const mineDone = d => mineMarks()[isoOf(d)] || [];
 function viewMine() {
   const cour = db.lists.couriers.includes(operator()) ? operator() : (S.mineCour || '');
   const D = TODAY + (S.mineDay || 0), t = S.mineTime || 'утро';
-  const all = cour ? deliveriesOn(D).filter(r => r.o.courier === cour) : [];
+  // утром курьер везёт пакеты вчерашней фасовки, вечером — сегодняшней
+  const all = cour ? [...deliveriesOn(D - 1).filter(r => r.o.time === 'утро'), ...deliveriesOn(D).filter(r => r.o.time === 'вечер')].filter(r => r.o.courier === cour) : [];
   const list = all.filter(r => r.o.time === t).sort((a, b) => ruCmp(a.cl.address, b.cl.address));
   const mapUrl = a => (String(a).match(/https?:\/\/\S+/) || [''])[0];
   const done = mineDone(D);
@@ -1015,3 +1020,48 @@ Object.assign(ACCESS_BIND, {
     $('#mineCount').textContent = $$('.mine-row.done').length; // без перерисовки: список остаётся на месте
   },
 });
+
+/* ---------------------------------------------------------------- «👁 Проверить права»: глазами роли или сотрудника */
+function setRolePreview(v) {
+  S.asRole = v;
+  $('#asBar')?.remove();
+  if (v) {
+    const bar = document.createElement('div');
+    bar.id = 'asBar';
+    bar.className = 'as-bar no-print';
+    bar.innerHTML = `👁 Так видит: <b>${esc(v.label)}</b>${v.label === roleName(v.role) ? '' : ' · ' + esc(roleName(v.role))}<button class="btn btn-sm" data-act="asExit">Выйти из просмотра</button>`;
+    document.body.appendChild(bar);
+  }
+  if (!canView(S.view)) S.view = firstView();
+  render();
+  applyPermsUI();
+}
+function openRolePreview() {
+  if (!FULL_ROLES.includes(realRole())) return;
+  const R = roleDefs(), roles = Object.values(R).filter(r => !FULL_ROLES.includes(r.id));
+  const devs = ((S.devs && S.devs.devices) || []).filter(d => d.role && !FULL_ROLES.includes(d.role) && !devGone(devIds(d)));
+  openModal({
+    title: 'Проверить, как выглядят права',
+    body: `<div class="muted small" style="margin-bottom:10px">Программа на этом окне покажет только то, что видит и может выбранная роль или сотрудник
+      (с его личными правами из «Устройств»). Ничего не меняется — выйти можно кнопкой вверху.</div>
+      <h3>Роль</h3><div class="chips" style="flex-wrap:wrap">${roles.map(r => `<button data-m="role" data-r="${esc(r.id)}">${esc(r.name)}</button>`).join('')}</div>
+      <h3 class="mt">Сотрудник (журнал управляющей → «Устройства»)</h3>
+      ${devs.length ? `<div class="chips" style="flex-wrap:wrap">${devs.map((d, i) => `<button data-m="dev" data-i="${i}">${esc(d.who || '—')} <span class="muted small">${esc(R[d.role]?.name || d.role)} · ${esc(d.pc || '')}</span></button>`).join('')}</div>`
+    : `<div class="muted small">Список сотрудников ещё не загружен. <a data-m="load">Загрузить</a></div>`}`,
+    foot: '<button class="btn" data-act="closeModal">Закрыть</button>',
+    onMount(root) {
+      root.addEventListener('click', async e => {
+        const b = e.target.closest('[data-m]');
+        if (!b) return;
+        if (b.dataset.m === 'load') {
+          b.textContent = 'Загружаю…';
+          try { S.devs = await api('POST', '/api/sync/devices', '{}'); } catch (err) { toast('Не удалось получить список: ' + err.message, 'bad'); return; }
+          closeModal(); openRolePreview(); return;
+        }
+        closeModal();
+        if (b.dataset.m === 'role') setRolePreview({ role: b.dataset.r, machine: '', label: R[b.dataset.r].name });
+        else { const d = devs[+b.dataset.i]; setRolePreview({ role: d.role, machine: d.machine, label: d.who || '—' }); }
+      });
+    },
+  });
+}
