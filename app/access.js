@@ -10,6 +10,7 @@ const PERM_GROUPS = [
   ['Что можно менять', [
     ['clients.edit', 'Клиенты и заказы: создавать, менять, замораживать, останавливать, возврат, удалять'],
     ['clients.address', 'Адрес и телефон клиента'],
+    ['clients.shift', 'Время доставки (утро ⇄ вечер) и смены доставки'],
     ['couriers.assign', 'Назначать курьеров: постоянного и временного (замены)'],
     ['couriers', 'Теги для курьеров'],
     ['couriers.list', 'Курьеры: добавлять, переименовывать, удалять'],
@@ -26,13 +27,14 @@ const PERM_GROUPS = [
   ]],
   ['Управление', [
     ['roles', 'Роли и доступы'], ['cloud', 'Облако GitHub: подключать, менять хранилище, отключать'], ['installer', 'Установщик программы'], ['installer.couriers', 'Ссылки iOS / Сайт версии для курьеров'], ['publish', 'Публиковать обновления программы'],
+    ['cloud.force', 'Принудительно освобождать базу — забирать программу у другого, не дожидаясь'],
   ]],
 ];
 const ALL_PERMS = PERM_GROUPS.flatMap(([, l]) => l.map(([k]) => k));
 const FULL_ROLES = ['manager', 'developer']; // меняют всё и раздают доступы
 const ROLE_BASE = {
-  om: { name: 'Офис-менеджер', perms: ALL_PERMS.filter(k => !['roles', 'cloud', 'installer', 'installer.couriers', 'publish', 'v.manager', 'couriers.assign'].includes(k)) },
-  courier: { name: 'Старший курьер', perms: ['v.delivery', 'clients.address', 'couriers', 'couriers.assign', 'couriers.files', 'print', 'couriers.list', 'installer.couriers'], add2: ['couriers.list', 'installer.couriers', 'couriers.assign'] },
+  om: { name: 'Офис-менеджер', perms: ALL_PERMS.filter(k => !['roles', 'cloud', 'cloud.force', 'installer', 'installer.couriers', 'publish', 'v.manager', 'couriers.assign'].includes(k)) },
+  courier: { name: 'Старший курьер', perms: ['v.delivery', 'clients.address', 'clients.shift', 'couriers', 'couriers.assign', 'couriers.files', 'print', 'couriers.list', 'installer.couriers'], add2: ['couriers.list', 'installer.couriers', 'couriers.assign', 'clients.shift'] },
   driver: { name: 'Курьер', perms: ['v.mine'] },
   manager: { name: 'Управляющая', perms: ALL_PERMS, pinKey: 'mgrPin' },
   developer: { name: 'Разработчик', perms: ALL_PERMS, pinKey: 'devPin' },
@@ -66,7 +68,9 @@ const firstView = () => ['mine', 'clients', 'delivery', 'packing', 'ending', 'me
 // какое право нужно для действия (кнопки data-act) и для поля (data-bind)
 const ACT_PERM = {
   newClient: 'clients.edit', newOrder: 'clients.edit', renewOrder: 'clients.edit', editOrder: 'clients.edit',
-  findReturners: 'clients.edit', changeProg: 'clients.edit', transferDays: 'clients.edit', freezeOrder: 'clients.edit', shiftsOrder: 'clients.edit', skipOrder: 'clients.edit', stopOrder: 'clients.edit', returnOrder: 'clients.edit', deleteOrder: 'clients.edit',
+  findReturners: 'clients.edit', changeProg: 'clients.edit', transferDays: 'clients.edit', freezeOrder: 'clients.edit',
+  // время и смены доставки: кто меняет заказы — может всегда, старший курьер — по праву «clients.shift»
+  shiftsOrder: () => (can('clients.edit') ? 'clients.edit' : 'clients.shift'), flipTime: () => (can('clients.edit') ? 'clients.edit' : 'clients.shift'), skipOrder: 'clients.edit', stopOrder: 'clients.edit', returnOrder: 'clients.edit', deleteOrder: 'clients.edit',
   deleteClient: 'clients.edit', toggleTag: 'clients.edit', pickDays: 'clients.edit', remindNow: 'clients.edit', allowDel: 'clients.edit', mergeCombo: 'clients.edit',
   saveClient: () => (can('clients.edit') ? 'clients.edit' : 'clients.address'),
   bulkSet: d => (d.k === 'courier' ? 'couriers.assign' : 'clients.edit'),
@@ -92,12 +96,12 @@ const ACT_PERM = {
   tagQuick: d => (d.k === 'ctags' ? 'couriers' : 'clients.edit'),
   groupAdd: 'admin.lists', groupRename: 'admin.lists', groupDel: 'admin.lists', groupPerson: 'admin.lists', groupPersonEdit: 'admin.lists', groupPersonDel: 'admin.lists',
   roleAdd: 'roles', roleDel: 'roles', installerDialog: 'installer', wipeBase: 'roles', devBlock: 'roles', devPin: 'roles', devRemove: 'roles', devUserDel: 'roles', devRestore: 'roles', devPerms: 'roles', cloudRestore: 'files',
-  cloudSave: 'cloud', cloudSwitch: 'cloud', menuSitePublish: 'cloud', cloudOff: 'cloud', cloudPublish: 'publish',
+  cloudSave: 'cloud', cloudSwitch: 'cloud', cloudForce: 'cloud.force', menuSitePublish: 'cloud', cloudOff: 'cloud', cloudPublish: 'publish',
 };
 // эти действия ничего не меняют в базе — их можно делать, даже когда программа у другого
 const NONMUT = new Set(['dselAll', 'addrNewsOk', 'dselClear', 'dcToggle', 'dcAll', 'devicesLoad', 'devBlock', 'devPerms', 'setLang', 'setTheme', 'setZoom', 'theme', 'cloudBackupsLoad', 'cloudBackupNow', 'installerDialog', 'courierLink', 'copyCourier', 'courierBase', 'exportDelivery', 'labels', 'exportPacking', 'exportBoth', 'pdgPng', 'printPage', 'printPacking', 'menuPrint',
   'menuPrintAll', 'menuPdf', 'exportClients', 'clientsTemplate', 'exportJson', 'exportXlsx', 'openFolder', 'backupNow', 'makeInstaller', 'aiEditKey',
-  'openMenuFiles', 'cloudSave', 'cloudSwitch', 'cloudOff', 'aiPick', 'gtFmt', 'gtSel', 'mcRec', 'cloudPublish']);
+  'openMenuFiles', 'cloudSave', 'cloudSwitch', 'cloudForce', 'cloudOff', 'aiPick', 'gtFmt', 'gtSel', 'mcRec', 'cloudPublish']);
 const BIND_PERM = {
   tagIn: 'clients.edit', ctagIn: 'couriers', dcour: 'couriers.assign', noCourName: 'couriers.list', yandexMaps: 'couriers', sceneHide: 'roles', progKitchen: 'admin.lists',
   holDefault: 'admin.lists', holName: 'admin.lists', holAll: 'admin.lists',
@@ -135,7 +139,9 @@ function applyPermsUI(root = document) {
   root.querySelectorAll('[data-act]').forEach(el => {
     const p = permOfAct(el.dataset.act, el.dataset);
     if (p) el.classList.toggle('perm-hide', !can(p));
-    if (isPhone() && PHONE_OFF.has(el.dataset.act)) el.classList.add('perm-hide');
+    // Excel «База курьеров» собирается прямо в окне — на телефоне и в сайт-версии он есть (в приложении Android — если оно умеет отдавать файлы)
+    const phoneOk = el.dataset.act === 'courierBase' && el.dataset.k === 'xlsx' && canFileHere();
+    if (isPhone() && PHONE_OFF.has(el.dataset.act) && !phoneOk) el.classList.add('perm-hide');
   });
   root.querySelectorAll('[data-bind]').forEach(el => {
     const p = BIND_PERM[el.dataset.bind];
@@ -153,7 +159,7 @@ function startPermsUI() {
 }
 
 /* ---------------------------------------------------------------- читатель: роль без права что-либо менять */
-const EDIT_PERMS = ['clients.edit', 'clients.address', 'couriers', 'couriers.assign', 'couriers.list', 'packing', 'menu', 'incident', 'finance', 'salary', 'files', 'admin.lists', 'admin.settings', 'roles', 'cloud', 'publish'];
+const EDIT_PERMS = ['clients.edit', 'clients.address', 'clients.shift', 'couriers', 'couriers.assign', 'couriers.list', 'packing', 'menu', 'incident', 'finance', 'salary', 'files', 'admin.lists', 'admin.settings', 'roles', 'cloud', 'publish'];
 // «Только режим читателя» ставится в установщике и в программе не снимается
 const readerOnly = () => !!(typeof S !== 'undefined' && S.local && S.local.readerOnly);
 const isReader = () => readerOnly() || !EDIT_PERMS.some(p => can(p));
@@ -388,6 +394,18 @@ const ACCESS_ACT = {
       });
     },
   }),
+  // программа у другого, а очень нужно: забрать сразу (право «cloud.force»)
+  cloudForce: () => {
+    const h = S.sync && S.sync.holder;
+    confirmBox('Принудительно освободить базу', `Программа сейчас у <b>${esc(h ? holderText(h) : 'другого')}</b>. Забрать её себе прямо сейчас?<br><br>`
+      + 'У него программа через несколько секунд перейдёт в просмотр. Что он успел изменить и ещё не отправил, останется у него и уйдёт в облако, когда программа снова будет у него.', 'Забрать себе', async () => {
+      try {
+        S.sync = await api('POST', '/api/sync/force', '{}');
+        toast(S.sync.mode === 'owner' ? 'Программа у вас' : 'Не получилось — попробуйте ещё раз через несколько секунд', S.sync.mode === 'owner' ? 'ok' : 'bad');
+      } catch (e) { toast('Не получилось: ' + e.message, 'bad', 6000); }
+      render();
+    });
+  },
   cloudTake: async () => { S.sync = await api('POST', '/api/sync/take', '{}'); toast(S.sync.mode === 'owner' ? 'Программа у вас' : 'Программа сейчас занята', S.sync.mode === 'owner' ? 'ok' : 'bad'); render(); },
   cloudNow: async () => { await api('POST', '/api/sync/now', '{}'); setTimeout(syncTick, 1500); toast('Проверяю облако…', ''); },
   cloudUpdate: async () => {
@@ -457,6 +475,7 @@ const ACCESS_BIND = {
 const readOnly = () => readerOnly() || !!(S.sync && S.sync.mode === 'viewer') || (isReader() && !!(S.sync && S.sync.connected));
 const holderWho = h => String((h && h.who) || '').replace(/^[—-]\s*·?\s*/, '').trim();
 const holderText = h => (!h ? '—' : holderWho(h) ? `${holderWho(h)}${h.pc ? ' (' + h.pc + ')' : ''}` : h.pc || '—');
+const forceOk = () => { const st = (typeof S !== 'undefined' && S.sync) || {}; return st.mode === 'viewer' && !!st.holder && can('cloud.force') && !isReader() && !(window.EHAndroid && window.EHAndroid.print); };
 const viewerMsg = () => (isReader() ? 'Вы читатель — в этой программе можно только смотреть. Данные обновляются сами.' : S.sync && !S.sync.holder ? 'Вы освободили программу — чтобы снова работать, нажмите «Взять программу» в «Облаке».'
   : `Сейчас программа у ${holderText(S.sync && S.sync.holder)} — менять базу может только он. Вы в режиме просмотра: данные обновляются сами.`);
 async function reloadFromServer() {
@@ -689,7 +708,7 @@ function renderOwner() {
   if (bar) bar.hidden = !readOnly() || solo;
   if (bar && readOnly()) bar.innerHTML = isReader() ? 'Вы читатель — можно только смотреть. Данные обновляются сами каждые несколько секунд.'
     : !st.holder ? 'Программа свободна — вы её освободили. Чтобы снова работать, нажмите <a data-act="cloudTake">Взять программу</a>.'
-      : `Только просмотр — программа у <b>${esc(holderText(st.holder))}</b>. Данные обновляются сами каждые несколько секунд. <a data-nav="cloud">Подробнее</a>`;
+      : `Только просмотр — программа у <b>${esc(holderText(st.holder))}</b>. Данные обновляются сами каждые несколько секунд. <a data-nav="cloud">Подробнее</a>${forceOk() ? ' · <a data-act="cloudForce">Принудительно освободить базу</a>' : ''}`;
 }
 
 /* ---------------------------------------------------------------- установщик с параметрами */
@@ -876,6 +895,7 @@ function viewCloud() {
         <b>Последняя отправка</b><span>${st.lastSync ? fmtStamp(st.lastSync) : '—'}</span>` : ''}</div>
       <div class="actions">${st.mode === 'owner' ? '<button class="btn" data-act="cloudRelease">Освободить программу</button>' : ''}
         ${st.mode === 'viewer' && !st.holder ? '<button class="btn btn-green" data-act="cloudTake">Взять программу</button>' : ''}
+        ${forceOk() ? '<button class="btn btn-red" data-act="cloudForce" title="Забрать программу себе сразу, не дожидаясь, пока он закроет">⚡ Принудительно освободить базу</button>' : ''}
         ${st.connected ? '<button class="btn" data-act="cloudNow">↻ Проверить сейчас</button><button class="btn" data-act="cloudUpdate">Проверить обновление программы</button>' : ''}</div></div>
     ${hiddenViews().length ? `<div class="card"><h2>Скрытые вкладки</h2><div class="muted small" style="margin-bottom:8px">скрываются правой кнопкой мыши по вкладке слева</div>
       ${hiddenViews().map(v => `<div class="dl-sum-row">${esc(TAB_NAMES[v] || v)}<button class="btn btn-sm" data-act="showTab" data-v="${esc(v)}">Показать</button></div>`).join('')}</div>` : ''}
