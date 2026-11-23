@@ -358,6 +358,20 @@
       holdOff = true;
     } catch { /* сигнал пропадёт сам через минуту */ }
   }
+  // «Принудительно освободить базу» — как sync.py force_take: забираем программу у другого сразу
+  async function forceTake() {
+    if (!token()) throw new Error('Облако не подключено');
+    if (reader) throw new Error('Читатель не забирает программу');
+    if (await readRemote(true)) {
+      const lk = headState.lock || {};
+      if (lk.machine !== local.machine) {
+        await write({ ...headState, lock: { ...me(), since: now(), beat: now() } }, `Программу забрал принудительно · ${who || '—'} (была у ${lk.who || '—'})`, null, false);
+        lastBeat = now();
+      }
+    }
+    holdOff = false;
+    await step();
+  }
   async function cloudBackup(reason) {
     if (!token()) throw new Error('Облако не подключено');
     const raw = baseBytes();
@@ -460,6 +474,7 @@
       case 'now': wake(); break;
       case 'release': await serial(release); break;
       case 'take': holdOff = false; await serial(step); break;
+      case 'force': await serial(forceTake); break;
       case 'devices': return { ...status(), ...await devices() };
       case 'block': await serial(() => block(q.ids, q.label || '', q.on !== false)); break;
       case 'remove': await serial(() => block(q.ids, q.label || '', true, 'removed')); break;
