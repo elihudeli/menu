@@ -1013,6 +1013,9 @@ body.dark .tf.on { background: var(--tc); box-shadow: 0 0 0 1.5px rgba(255,255,2
 @media screen and (max-width: 760px) { .dp-row { flex-direction: column; align-items: flex-start; } }
 /* пометки и теги вводятся из созданных */
 .tf-in { width: 240px; padding: 4px 8px; font-size: 12px; }
+/* фильтр пометок — список с подписью, не поле ввода: не путается с поиском по ФИО */
+.tf-lbl { font-size: 12px; font-weight: 600; color: var(--muted, #6f6f6a); }
+.tf-sel { width: auto; min-width: 150px; padding: 3px 8px; font-size: 12px; border-style: dashed; }
 .tag-in { width: 190px; padding: 3px 8px; font-size: 12px; }
 .bulk input { width: 150px; padding: 3px 6px; font-size: 12px; }
 /* экран PIN-кода */
