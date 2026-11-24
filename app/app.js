@@ -450,8 +450,18 @@ function frozenAt(o, D) {
   const f = calc(o).fz.find(([a, b]) => D >= a && D <= b);
   return f || null;
 }
+// «Открытая дата готовки»: клиент купил питание, но сам скажет, с какого дня начать — заказ заморожен на неопределённый
+// срок прямо с даты начала (o.openStart — пометка для цвета и кнопки «Назначить старт»); заморозку сняли/укоротили — пометка уже не действует
+const isOpenFreeze = (o, f) => f.from === o.start && dn(f.to) - dn(f.from) > 730;
+const openDate = o => !!o.openStart && !o.stopped && (o.freezes || []).some(f => isOpenFreeze(o, f));
+function setOpenStart(o) {
+  if (!o.openStart) delete o.openStart;
+  else if (!o.freezes.some(f => isOpenFreeze(o, f))) o.freezes = normFreezes([...o.freezes, { from: o.start, to: isoOf(dn(o.start) + INDEF_DAYS) }]);
+  return o;
+}
 function orderState(o, D) {
   const c = calc(o);
+  if (openDate(o)) return 'frozen'; // и до даты начала — клиент уже «в замороженных»
   if (D < c.start) return 'future';
   if (c.indefFrom !== undefined && D >= c.indefFrom) return 'frozen';
   if (D > c.end) {
@@ -485,16 +495,18 @@ function clientInfo(cl) {
   }
   // «Остановить» = заморозка на неопределённый срок: клиент не питается (но оставшиеся дни сохранены)
   // заморожен, а дней по заказу уже не осталось (как в Excel) — тоже не питается
-  const paused = !!cur && curSt === 'frozen' && ((calc(cur).indefFrom !== undefined && TODAY >= calc(cur).indefFrom) || TODAY > calc(cur).end);
+  const open = !!cur && openDate(cur);
+  const paused = !!cur && curSt === 'frozen' && (open || (calc(cur).indefFrom !== undefined && TODAY >= calc(cur).indefFrom) || TODAY > calc(cur).end);
   let status;
   if (next || (cur && !paused)) status = 'active';
   else {
     const ref = lastEnd ?? dn((cl.createdAt || localIso()).slice(0, 10));
-    status = addMonthsDn(ref, archiveMonths()) < TODAY ? 'archive' : 'idle';
+    status = !open && addMonthsDn(ref, archiveMonths()) < TODAY ? 'archive' : 'idle'; // открытая дата — купил, ждёт старта: не в архив
   }
   const main = cur || next || os[os.length - 1] || null;
   let note = null;
-  if (cur && curSt === 'frozen') {
+  if (open) note = { cls: 'opendate', text: 'открытая дата готовки' };
+  else if (cur && curSt === 'frozen') {
     const fz = frozenAt(cur, TODAY) || [0, Infinity];
     note = { cls: 'frozen', text: fz[1] - fz[0] > 730 ? 'заморожен на неопр. срок' : 'заморозка до ' + fmtS(fz[1]) };
   }
@@ -1105,8 +1117,8 @@ function clientModalParts(cl) {
     const isOpen = st !== 'done' && st !== 'stopped';
     cur = `<div class="cur-order">
       <div class="row" style="justify-content:space-between">
-        <span class="tag ${OSTATE[st][1]}">${OSTATE[st][0]}</span>
-        <span class="muted small">${st === 'future' ? 'старт ' + fmt(k.start) : `доставлено ${done} из ${o.days}`}</span>
+        ${openDate(o) ? '<span class="tag opendate">Открытая дата готовки</span>' : `<span class="tag ${OSTATE[st][1]}">${OSTATE[st][0]}</span>`}
+        <span class="muted small">${openDate(o) ? `${o.days} дн. ждут старта — клиент сам скажет дату` : st === 'future' ? 'старт ' + fmt(k.start) : `доставлено ${done} из ${o.days}`}</span>
       </div>
       <div class="big mt">${esc(progLabel(o.program))}</div>
       <div class="progress" style="width:100%;height:8px;margin:8px 0 14px"><i style="width:${pct}%"></i></div>
@@ -1139,7 +1151,7 @@ function clientModalParts(cl) {
         <button class="btn btn-sm" data-act="freezeOrder" data-id="${esc(o.id)}">Заморозка (календарь)</button>
         <button class="btn btn-sm" data-act="skipOrder" data-id="${esc(o.id)}">Отдельные дни</button>
         <button class="btn btn-sm" data-act="shiftsOrder" data-id="${esc(o.id)}" title="Календарь: закрасить дни — утро (жёлтый), вечер (коричневый), оба — 2 пакета">Смены доставки</button>
-        <button class="btn btn-sm" data-act="stopOrder" data-id="${esc(o.id)}">${k.indefFrom !== undefined ? '▶ Возобновить' : 'Остановить'}</button>
+        <button class="btn btn-sm ${openDate(o) ? 'btn-green' : ''}" data-act="stopOrder" data-id="${esc(o.id)}">${openDate(o) ? '▶ Назначить старт' : k.indefFrom !== undefined ? '▶ Возобновить' : 'Остановить'}</button>
         <button class="btn btn-sm btn-red" data-act="returnOrder" data-id="${esc(o.id)}" title="Клиент прекращает питание — ставится пометка «Возврат»">↩ Возврат</button>` : ''}
         ${st === 'stopped' ? `<button class="btn btn-sm" data-act="stopOrder" data-id="${esc(o.id)}">Возобновить</button>` : ''}
         <button class="btn btn-sm btn-green" data-act="renewOrder" data-id="${esc(o.id)}">↻ Продлить</button>
@@ -1150,7 +1162,7 @@ function clientModalParts(cl) {
     const st = orderState(x, TODAY);
     return `<tr><td class="nowrap">${fmt(k.start)} — ${fmt(k.end)}</td><td>${esc(progLabel(x.program))}</td>
       <td>${x.days}</td><td>${esc(orderDaysText(x))}</td><td>${esc(x.courier)}</td><td>${esc(x.manager)}</td>
-      <td><span class="tag ${OSTATE[st][1]}">${OSTATE[st][0]}</span>${x.freezes.length ? ' <span class="tag frozen">заморозки</span>' : ''}${x.transfer ? ` <span class="tag" title="от ${esc(x.transfer.fromName || 'другого клиента')}">передача</span>` : ''}</td>
+      <td>${openDate(x) ? '<span class="tag opendate">Открытая дата</span>' : `<span class="tag ${OSTATE[st][1]}">${OSTATE[st][0]}</span>${x.freezes.length ? ' <span class="tag frozen">заморозки</span>' : ''}`}${x.transfer ? ` <span class="tag" title="от ${esc(x.transfer.fromName || 'другого клиента')}">передача</span>` : ''}</td>
       <td class="nowrap right">
         <button class="btn btn-icon btn-sm" data-act="editOrder" data-id="${esc(x.id)}" title="Изменить">✎</button>
         <button class="btn btn-icon btn-sm" data-act="freezeOrder" data-id="${esc(x.id)}" title="Заморозка">‖</button>
@@ -1677,7 +1689,9 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
         <input class="input mt" type="time" name="timeAt" value="${esc(v.timeAt)}" style="width:140px" hidden></div>
       <label class="field"><span>Постоянный курьер</span><input class="input" name="courier" list="dl-couriers" value="${esc(v.courier)}" ${can('couriers.assign') ? '' : 'disabled title="Нет права назначать курьеров"'}></label>
       <label class="field"><span>Ответственный</span><input class="input" name="manager" list="dl-managers" value="${esc(v.manager || operator())}"></label>
-      <label class="field"><span>Дата первой готовки *</span><input class="input" type="date" name="start" value="${esc(start)}"></label>
+      <div class="field"><span>Дата первой готовки *</span><input class="input" type="date" name="start" value="${esc(start)}">
+        ${/* только при продаже новому клиенту и продлении (новый заказ); у заказа с открытой датой — чтобы снять */ !order || openDate(order) ? `<label class="row small" id="openStartBox" style="gap:6px;margin-top:6px" ${order?.transfer ? 'hidden' : ''} title="Клиент купил питание, но сам скажет, с какого дня начать: заказ стоит в замороженных, пока не назначите старт">
+          <input type="checkbox" name="openStart" ${order && openDate(order) ? 'checked' : ''}> Открытая дата готовки — клиент сам скажет, с какого дня</label>` : ''}</div>
       <div class="field"><span>Кол-во дней доставки *</span><div class="row">
         <input class="input" type="number" min="1" max="400" name="days" value="${v.days}" style="width:90px">
         ${[7, 14, 21, 30].map(n => `<button type="button" class="btn btn-sm" data-m="days" data-n="${n}">${n}</button>`).join('')}</div></div>
@@ -1796,11 +1810,13 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
         return {
           program: canonProgram(normProg(val('program'))), time: (at ? at >= CORP_NOON : timeKey === 'вечер') ? 'вечер' : 'утро', timeAt: at, courier: val('courier'),
           persons: corp ? parseInt(val('persons'), 10) || 0 : 0, company: corp ? val('company') : '',
-          manager: val('manager'), start: val('start'), days: st ? stagesTotal(st) : parseInt(val('days'), 10) || 0,
+          // открытая дата: поле даты спрятано — дата начала служебная (сдвинется, когда нажмут «▶ Назначить старт»)
+          manager: val('manager'), start: val('start') || (root.querySelector('[name="openStart"]')?.checked ? isoOf(TODAY + 1) : ''), days: st ? stagesTotal(st) : parseInt(val('days'), 10) || 0,
           weekdays: $$('.wdb', root).map(b => (b.classList.contains('on') ? 1 : 0)),
           dayMode, customDays: dayMode === 'custom' ? customDays.slice() : [],
           allergen: val('allergen'), note: val('note'), stages: st && st.length ? st : null,
           holidays: val('holidays') === 'no' ? 'no' : 'yes', holidayCal: val('holidayCal'),
+          openStart: (root.querySelector('[name="openStart"]')?.checked && !root.querySelector('[name="isTransfer"]')?.checked) || undefined, // передача дней — не продажа: без открытой даты
         };
       };
       const preview = () => {
@@ -1818,6 +1834,12 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
             ? `Выбрано ${k.list.length} из ${x.days} дат: ${k.list.slice(0, 14).map(fmtS).join(', ')}${k.list.length > 14 ? '…' : ''}`
               + (k.open ? `<br>Осталось выбрать ${k.remaining} — программа напомнит.` : `<br>Последняя готовка: <b>${fmt(k.end)}</b> (доставка ${rideText(k.end, x.time)})`)
             : `Даты пока не выбраны (${x.days} дн.) — нажмите «Выбрать даты» или выберите позже: программа напомнит.`;
+          return;
+        }
+        if (x.openStart) {
+          p.className = 'preview mt';
+          p.innerHTML = `<b>Открытая дата готовки</b>: ${x.days} дн. ждут, пока клиент скажет, с какого дня начать. Клиент — в замороженных;
+            когда скажет — в карточке клиента «▶ Назначить старт».`;
           return;
         }
         const k = computeCalc({ ...(order || {}), ...x, id: '__tmp' });
@@ -1914,7 +1936,21 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
       attachSuggest(root.querySelector('[name="manager"]'), () => db.lists.managers);
       setTimeout(() => root.querySelector(newClient ? '[name="name"]' : '[name="program"]')?.focus(), 30);
       const trBox = root.querySelector('[name="isTransfer"]');
-      trBox.addEventListener('change', () => { root.querySelector('[name="transferFrom"]').hidden = !trBox.checked; $('#trHint', root).hidden = !trBox.checked; });
+      trBox.addEventListener('change', () => {
+        root.querySelector('[name="transferFrom"]').hidden = !trBox.checked; $('#trHint', root).hidden = !trBox.checked;
+        const ob = $('#openStartBox', root);
+        if (ob) { ob.hidden = trBox.checked; if (trBox.checked) { ob.querySelector('input').checked = false; ob.querySelector('input').dispatchEvent(new Event('input', { bubbles: true })); } }
+        openUi();
+      });
+      // «Открытая дата готовки» — поле «Дата первой готовки» исчезает: дату клиент скажет позже
+      const openCb = root.querySelector('[name="openStart"]');
+      function openUi() {
+        const on = !!openCb?.checked, inp = root.querySelector('[name="start"]');
+        inp.hidden = on;
+        inp.previousElementSibling.textContent = on ? 'Дата первой готовки — клиент скажет позже' : 'Дата первой готовки *';
+      }
+      openCb?.addEventListener('change', openUi);
+      openUi();
       // отметка «передача дней»: такой заказ не считается продажей
       const transferOf = () => (trBox.checked ? { ...(order?.transfer || { fromOrder: '', fromClient: '', days: 0, at: localIso() }), fromName: root.querySelector('[name="transferFrom"]').value.trim() } : null);
       const saveOrder = more => {
@@ -1974,7 +2010,10 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
           if (sdKeep) order.soldAt = sdKeep; else delete order.soldAt;
           order.__chg = chg.join('; ');
           const pc = order.progCh;
+          if (openDate(order)) order.freezes = order.freezes.filter(f => !isOpenFreeze(order, f)); // заново ниже, от новой даты начала
+          if (!!rest.openStart !== openDate(order)) chg.push(rest.openStart ? 'открытая дата готовки' : 'открытая дата снята');
           Object.assign(order, rest);
+          setOpenStart(order);
           if (was.program !== rest.program) order.progCh = { at: localIso(), from: pc && pc.at.slice(0, 10) === localIso().slice(0, 10) ? pc.from : was.program };
           if (stg) order.stages = stg; else delete order.stages;
           if (tr) order.transfer = tr; else delete order.transfer;
@@ -1986,11 +2025,12 @@ function openOrderForm({ newClient = false, clientId = null, order = null, prefi
           const copies = Math.max(1, Math.min(10, parseInt(root.querySelector('[name="copies"]')?.value, 10) || 1));
           const sk = root.querySelector('[name="saleKind"]')?.value || ''; // продажа / продление — выбрано при оформлении, иначе авто
           for (let n = 0; n < copies; n++) {
-            db.orders.push({ id: uid('o_'), clientId: cid, ...rest, ...(SALE_KINDS[sk] ? { saleKind: sk } : {}), ...(stg ? { stages: stg.map(z => ({ ...z })) } : {}), ...(tr ? { transfer: { ...tr, days: rest.days } } : {}), freezes: [], skips: [], stopped: null, createdAt: now, updatedAt: now });
+            db.orders.push(setOpenStart({ id: uid('o_'), clientId: cid, ...rest, ...(SALE_KINDS[sk] ? { saleKind: sk } : {}), ...(stg ? { stages: stg.map(z => ({ ...z })) } : {}), ...(tr ? { transfer: { ...tr, days: rest.days } } : {}), freezes: [], skips: [], stopped: null, createdAt: now, updatedAt: now }));
           }
           clearReturnTag(CLIENTS.get(cid)); // снова купил — «Возврат» больше не актуален
           if (copies > 1) logText = (logText || '') + ` · пакетов: ${copies}`;
           if (!newClient) logText = `${prefill ? 'Продление' : 'Новый заказ'}: ${CLIENTS.get(cid)?.name || ''}, ${progLabel(x.program)} с ${fmt(dn(x.start))} на ${x.days} дн.`;
+          if (rest.openStart) logText += ' · открытая дата готовки';
         }
         addToLists(rest);
         closeModal();
@@ -2479,6 +2519,39 @@ function openStop(o) {
       commit(`Возобновлён заказ после возврата: ${cl?.name || ''}`, 'stop');
       toast('Заказ возобновлён. Окончание: ' + fmt(calc(o).end), 'ok');
     }, false);
+    return;
+  }
+  if (openDate(o)) { // открытая дата — клиент сказал, с какого дня начать: это и есть дата начала заказа
+    openModal({
+      title: '▶ Назначить старт — ' + (cl ? cl.name : ''),
+      body: `<div class="muted">Открытая дата готовки: ${o.days} дн. ждут старта. Укажите день первой готовки — заказ начнётся с него.</div>
+        <div class="form mt"><label class="field"><span>Первая готовка</span>
+          <input class="input" type="date" name="day" value="${isoOf(TODAY + 1)}"></label></div>
+        <div class="preview mt" id="osPreview"></div>`,
+      foot: '<button class="btn" data-act="closeModal">Отмена</button><button class="btn btn-green" data-m="save">▶ Назначить старт</button>',
+      onMount(root) {
+        const day = () => dn(root.querySelector('[name="day"]').value);
+        const preview = () => {
+          const d = day();
+          if (!Number.isFinite(d)) return;
+          const k2 = computeCalc({ ...o, start: isoOf(d), freezes: o.freezes.filter(f => !isOpenFreeze(o, f)) });
+          $('#osPreview', root).innerHTML = `Готовка: <b>${fmt(k2.start)}</b> — <b>${fmt(k2.end)}</b>, ${o.days} дн. Первая доставка <b>${rideText(k2.list[0] ?? d, o.time)}</b>`;
+        };
+        root.addEventListener('input', preview);
+        preview();
+        $('[data-m="save"]', root).addEventListener('click', () => {
+          const d = day();
+          if (!Number.isFinite(d)) return;
+          o.freezes = o.freezes.filter(f => !isOpenFreeze(o, f));
+          o.start = isoOf(d);
+          delete o.openStart; // курьер заказа не сбрасывается — как у обычного нового заказа
+          touch(o);
+          closeModal();
+          commit(`Открытая дата: ${cl?.name || ''} — старт ${fmt(d)}, доставка ${rideText(calc(o).list[0] ?? d, o.time)}`, 'freeze');
+          toast('Старт назначен. Окончание: ' + fmt(calc(o).end), 'ok');
+        });
+      },
+    });
     return;
   }
   const indef = o.freezes.find(f => dn(f.to) - dn(f.from) > 730);
