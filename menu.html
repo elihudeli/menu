@@ -20,7 +20,7 @@
   <div class="hint" id="hint"></div>
 </main>
 <script>
-/* Меню из QR-кода: текст меню лежит в самой ссылке (после #), страница только рисует его — ничего не грузит из сети.
+/* Меню из QR-кода: по короткой ссылке (#дата/калораж) берёт меню дня с этого же сайта, у старых бирок текст меню лежит в самой ссылке.
    Формат текста (он же виден, если отсканировать QR без этой страницы):
      ЕлиХудели · 900 ккал · 30.10.2026
      <пустая строка>
@@ -90,10 +90,20 @@ function menuSvg(m) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Меню дня">${parts.join('')}</svg>`;
 }
 const unb64 = s => { const b = atob(s.replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, c => c.charCodeAt(0)); };
-// «z1.» — меню сжато (deflate) в кодировке windows-1251, так QR получается меньше; иначе — текст в UTF-8
+// «2026-11-25/1200» — короткая ссылка: меню берётся с сайта (d/2026-11-25.json, выкладывает программа);
+// «z1.» — старые бирки: меню сжато (deflate) в кодировке windows-1251 прямо в ссылке; иначе — текст в UTF-8
 async function fromHash() {
   const h = location.hash.slice(1);
   if (!h) return '';
+  const s = h.match(/^(\d{4}-\d{2}-\d{2})\/(\d{1,5})$/);
+  if (s) {
+    try {
+      const r = await fetch(`d/${s[1]}.json`, { cache: 'no-cache' });
+      const t = r.ok && (await r.json())[s[2]];
+      if (t) return t;
+    } catch { /* нет интернета */ }
+    throw new Error(`Меню на ${s[1].split('-').reverse().join('.')} (${s[2]} ккал) не загрузилось — проверьте интернет и отсканируйте ещё раз.`);
+  }
   try {
     if (h.startsWith('z1.')) {
       const st = new Blob([unb64(h.slice(3))]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
@@ -103,10 +113,12 @@ async function fromHash() {
   } catch { return decodeURIComponent(h); }
 }
 async function show() {
-  const t = await fromHash();
-  if (!t) { document.getElementById('hint').textContent = 'Отсканируйте QR-код на пакете — здесь появится меню дня.'; return; }
-  document.getElementById('card').innerHTML = menuSvg(parseMenu(t));
-  document.getElementById('hint').textContent = 'Меню записано прямо в QR-коде — страница работает без интернета.';
+  const hint = document.getElementById('hint'), card = document.getElementById('card');
+  let t;
+  try { t = await fromHash(); } catch (e) { card.innerHTML = ''; hint.textContent = e.message; return; }
+  if (!t) { hint.textContent = 'Отсканируйте QR-код на пакете — здесь появится меню дня.'; return; }
+  card.innerHTML = menuSvg(parseMenu(t));
+  hint.textContent = /^#z1\./.test(location.hash) ? 'Меню записано прямо в QR-коде — страница работает без интернета.' : '';
 }
 window.addEventListener('hashchange', show);
 show();
