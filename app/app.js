@@ -553,6 +553,8 @@ function subHits(r, D) {
 // D — день в заказе (день фасовки): вечерний пакет курьер везёт в тот же вечер, утренний — на следующее утро.
 // Замены и «Смена доставки» задаются по дню, когда курьер везёт, — поэтому утро сдвигаем на +1.
 const rideDay = (D, t) => (t === 'утро' ? D + 1 : D);
+// сколько пакетов заказа уже довезли к дню D включительно: утренний пакет дня готовки D везут только утром D+1
+const deliveredTo = (k, D) => k.list.reduce((n, c, i) => n + (rideDay(c, k.shifts[i]) <= D ? 1 : 0), 0);
 // дни заказа — дни ГОТОВКИ: приготовленное D везут «на D+1» — вечером D или утром D+1
 const rideText = (D, t) => (t === 'вечер' ? 'вечером ' + fmtS(D) : 'утром ' + fmtS(D + 1));
 const cookDay = (P, t) => (t === 'утро' ? P - 1 : P);
@@ -1051,7 +1053,7 @@ function clientRow(c) {
   let cells = `<td colspan="2" class="muted">нет заказов</td><td>${c.courier ? chip('couriers', c.courier, '') : ''}</td><td>${c.manager ? chip('managers', c.manager, '') : ''}</td><td colspan="2"></td>`;
   if (o) {
     const k = calc(o);
-    const done = countLE(k.list, TODAY);
+    const done = deliveredTo(k, TODAY);
     const pct = o.days ? Math.min(100, Math.round(done / o.days * 100)) : 0;
     const stg = stageAt(o, done);
     cells = `<td title="${esc(progLabel(o.program))}">${esc(progLabel(o.program))}${stg ? `<div class="muted small">этап ${stg.i + 1}/${stg.n}: ${esc(stg.label)}</div>` : ''}</td>
@@ -1112,7 +1114,7 @@ function clientModalParts(cl) {
   if (o) {
     const k = calc(o);
     const st = orderState(o, TODAY);
-    const done = countLE(k.list, TODAY);
+    const done = deliveredTo(k, TODAY);
     const pct = o.days ? Math.min(100, Math.round(done / o.days * 100)) : 0;
     const fz = o.freezes.length ? o.freezes.map(f => `${fmtS(dn(f.from))}–${fmtS(dn(f.to))}`).join(', ') : '—';
     const sk = o.skips.length ? o.skips.map(s => fmtS(dn(s))).join(', ') : '—';
@@ -2689,7 +2691,7 @@ function returnCandidates(minDays = 180) {
     const fz = frozenAt(i.cur, TODAY);
     if (!fz || (fz[1] - fz[0] < minDays && TODAY - fz[0] < minDays)) continue; // долго: заморозка рассчитана на N дней или уже идёт N дней
     const k = calc(i.cur);
-    out.push({ c, o: i.cur, since: fz[0], until: fz[1], indef: fz[1] - fz[0] > 730, ago: TODAY - fz[0], left: i.cur.days - countLE(k.list, TODAY) });
+    out.push({ c, o: i.cur, since: fz[0], until: fz[1], indef: fz[1] - fz[0] > 730, ago: TODAY - fz[0], left: i.cur.days - deliveredTo(k, TODAY) });
   }
   return out.sort((x, y) => x.since - y.since);
 }
@@ -6326,7 +6328,7 @@ function openChangeProgram(o) {
   };
   openModal({
     title: `Сменить программу — ${cl?.name || ''}`,
-    body: `<div class="muted" style="margin-bottom:10px">Сейчас: <b>${esc(progLabel(was()))}</b>, ${fmt(k.start)} — ${fmt(k.end)}, доставлено ${countLE(k.list, TODAY)} из ${o.days}</div>
+    body: `<div class="muted" style="margin-bottom:10px">Сейчас: <b>${esc(progLabel(was()))}</b>, ${fmt(k.start)} — ${fmt(k.end)}, доставлено ${deliveredTo(k, TODAY)} из ${o.days}</div>
       <div class="form">
         <label class="field"><span>Новая программа</span><select class="input" data-m="prog"><option value="">— выберите —</option>
           ${progs.filter(p => p.toLowerCase() !== String(was()).toLowerCase()).map(p => `<option value="${esc(p)}">${esc(progLabel(p))}</option>`).join('')}</select></label>
@@ -7247,7 +7249,7 @@ function sheetClients(list = db.clients) {
     .map(c => {
       const i = CINFO.get(c.id), o = i.main, k = o ? calc(o) : null;
       return [c.name, c.phone, STATUS[i.status], [...clientTags(c).map(t => t.name), i.note ? i.note.text : ''].filter(Boolean).join(', '), o ? o.program : '', o ? o.time : '', o ? o.courier : '',
-        o ? o.manager : '', k ? fmt(k.start) : '', k ? fmt(k.end) : '', o ? o.days : '', o ? `${countLE(k.list, TODAY)}/${o.days}` : '',
+        o ? o.manager : '', k ? fmt(k.start) : '', k ? fmt(k.end) : '', o ? o.days : '', o ? `${deliveredTo(k, TODAY)}/${o.days}` : '',
         o ? o.allergen : '', c.address, c.comment, c.id];
     });
   return { name: 'Клиенты', columns: CLIENT_COLUMNS, widths: CLIENT_WIDTHS, rows };
