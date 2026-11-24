@@ -2276,59 +2276,87 @@ function openFreeze(o, mode = 'range') {
   };
   const ranges = () => normFreezes(st.freezes).map(f => [dn(f.from), dn(f.to)]);
   const setRanges = rs => { st.freezes = normFreezes(rs.filter(([a, b]) => a <= b).map(([a, b]) => ({ from: isoOf(a), to: isoOf(b) }))); };
-  // закрасить день выбранной кистью: утро (вся ячейка / левая половина), вечер (вся ячейка / правая половина), ластик
-  const paintDay = d => {
-    const iso = isoOf(d), cur = st.dayTimes[iso], t = st.paint;
-    if (t.startsWith('c:')) { // кисть-курьер: на пакеты этого дня; хранится по дню, когда курьер везёт (утро — назавтра)
-      const who = t.slice(2);
-      for (const x of uniq(packetsOn({ ...o, dayTimes: st.dayTimes }, d)).filter(x => st.cshift === 'both' || x === st.cshift)) {
-        if (rideDay(d, x) < TODAY) continue;
-        const key = isoOf(rideDay(d, x)) + '|' + x;
-        if (who) st.courDays[key] = who; else delete st.courDays[key];
-      }
-      return;
-    }
-    if (!canShift) return;
+  // Календарь смен — по дням ДОСТАВКИ: утренний пакет (готовят накануне) стоит в клетке дня, когда его везут.
+  // Поэтому утренняя кисть красит день готовки d-1, вечерняя — день d (в базе смены по-прежнему лежат по дню готовки).
+  const paintShift = (c, t) => {
+    const iso = isoOf(c), cur = st.dayTimes[iso];
     if (t === 'erase') { delete st.dayTimes[iso]; return; }
-    const eff = cur === 'both' || cur === 'one' ? ['утро', 'вечер'] : cur ? [cur] : dayAllowed(o, d) ? [o.time] : [];
+    const eff = cur === 'both' || cur === 'one' ? ['утро', 'вечер'] : cur ? [cur] : dayAllowed(o, c) ? [o.time] : [];
     let M = eff.includes('утро'), E = eff.includes('вечер');
     if (t === 'mfull') { M = true; E = false; }
     else if (t === 'efull') { M = false; E = true; }
     else if (t === 'mhalf') { if (M && E) M = false; else if (!M) M = true; }
     else if (t === 'ehalf') { if (M && E) E = false; else if (!E) E = true; }
     const v = M && E ? 'both' : M ? 'утро' : 'вечер';
-    if (v === o.time && dayAllowed(o, d)) delete st.dayTimes[iso]; else st.dayTimes[iso] = v;
+    if (v === o.time && dayAllowed(o, c)) delete st.dayTimes[iso]; else st.dayTimes[iso] = v;
   };
+  // закрасить день (дату доставки) выбранной кистью: утро (вся ячейка / левая половина), вечер (вся ячейка / правая половина), ластик
+  const paintDay = d => {
+    const t = st.paint;
+    if (t.startsWith('c:')) { // кисть-курьер: на пакеты, которые везут в этот день; хранится по дню, когда курьер везёт
+      const who = t.slice(2);
+      for (const x of ['утро', 'вечер']) {
+        if ((st.cshift !== 'both' && st.cshift !== x) || d < TODAY) continue;
+        if (!packetsOn({ ...o, dayTimes: st.dayTimes }, x === 'утро' ? d - 1 : d).includes(x)) continue;
+        const key = isoOf(d) + '|' + x;
+        if (who) st.courDays[key] = who; else delete st.courDays[key];
+      }
+      return;
+    }
+    if (!canShift) return;
+    if (t === 'erase') { paintShift(d - 1, t); paintShift(d, t); return; }
+    paintShift(t.startsWith('m') ? d - 1 : d, t);
+  };
+  const cookAt = (pend, c) => { // что готовят в день c (в порядке расчёта заказа)
+    const ov = st.dayTimes[isoOf(c)], lo = countLE(pend.list, c - 1), inSet = pend.set.has(c);
+    return { ov, lo, inSet, sh: inSet ? pend.shifts.slice(lo, countLE(pend.list, c)) : ov ? packetsOn({ ...o, dayTimes: st.dayTimes }, c) : [] };
+  };
+  const wantAt = (c, x) => !!((o.dayMode === 'custom' ? (o.customDays || []).includes(isoOf(c)) : dayAllowed(o, c)) || st.dayTimes[isoOf(c)])
+    && packetsOn({ ...o, dayTimes: st.dayTimes }, c).includes(x);
   const monthHtml = (m, pend, rs, skipSet) => {
     const d0 = new Date(m * DAY);
     const days = Math.round(Date.UTC(d0.getUTCFullYear(), d0.getUTCMonth() + 1, 1) / DAY) - m;
     const sel = st.anchor !== null ? [Math.min(st.anchor, st.hover ?? st.anchor), Math.max(st.anchor, st.hover ?? st.anchor)] : null;
+    const sm = st.mode === 'shifts';
+    const rides = pend.list.map((c, i) => rideDay(c, pend.shifts[i]));
+    const dFrom = sm && rides.length ? Math.min(...rides) : pend.start, dTo = sm && rides.length ? Math.max(...rides) : pend.end;
+    const frz = c => rs.some(([a, b]) => c >= a && c <= b);
     let cells = '<span class="cal-e"></span>'.repeat(wdOf(m));
     for (let d = m; d < m + days; d++) {
-      const fz = rs.some(([a, b]) => d >= a && d <= b);
+      let fz = frz(d), sk = skipSet.has(d), wo = o.dayMode !== 'custom' && !dayAllowed(o, d);
       const cls = ['cal-d'];
-      if (d >= pend.start && d <= pend.end) cls.push('in');
-      if (pend.set.has(d) && st.mode !== 'shifts') cls.push('dl');
+      if (d >= dFrom && d <= dTo) cls.push('in');
+      if (pend.set.has(d) && !sm) cls.push('dl');
       let nums = pend.set.has(d) ? countLE(pend.list, d) : '';
-      let ci = '';
-      if (st.mode === 'shifts') { // цвет дня: жёлтый — утро, коричневый — вечер, пополам — оба (2 пакета)
-        const ov = st.dayTimes[isoOf(d)], lo = countLE(pend.list, d - 1), hi = countLE(pend.list, d);
-        const sh = pend.set.has(d) ? pend.shifts.slice(lo, hi) : ov ? packetsOn({ ...o, dayTimes: st.dayTimes }, d) : [];
-        const mm = sh.includes('утро'), ee = sh.includes('вечер');
-        if ((mm || ee) && !fz) cls.push(mm && ee ? 'sh-b' : mm ? 'sh-m' : 'sh-e', ...(pend.set.has(d) ? [] : ['ghost']), ...(ov ? ['ov'] : []));
-        if ((mm || ee) && !fz) ci = uniq(sh).map(x => {
-          const n = courierOn({ ...o, courDays: st.courDays }, d, x) || '', own = !!st.courDays[isoOf(rideDay(d, x)) + '|' + x];
-          return `<b class="ci${own ? ' own' : ''}" style="background:${n ? personColor('couriers', n) : '#d64541'}" title="${x === 'утро' ? 'утро ' + fmtS(d + 1) : 'вечер ' + fmtS(d)}: ${esc(n || 'без курьера')}">${esc(n ? abbr(n) : '?')}</b>`;
-        }).join('');
-        if (pend.set.has(d)) nums = sh.length > 1 ? `${lo + 1}·${lo + sh.length}` : lo + 1;
+      let ci = '', doneToday = false;
+      if (sm) { // цвет дня доставки: жёлтый — утро, коричневый — вечер, пополам — оба. Утро — пакет, приготовленный накануне
+        const cm = cookAt(pend, d - 1), ce = cookAt(pend, d);
+        const mm = !frz(d - 1) && cm.sh.includes('утро'), ee = !frz(d) && ce.sh.includes('вечер');
+        fz = !mm && !ee && ((frz(d - 1) && wantAt(d - 1, 'утро')) || (frz(d) && wantAt(d, 'вечер')));
+        sk = !mm && !ee && !fz && ((skipSet.has(d - 1) && wantAt(d - 1, 'утро')) || (skipSet.has(d) && wantAt(d, 'вечер')));
+        wo = o.dayMode !== 'custom' && !dayAllowed(o, o.time === 'утро' ? d - 1 : d);
+        const num = [];
+        if (mm && cm.inSet) cm.sh.forEach((x, k) => { if (x === 'утро') num.push(cm.lo + k + 1); });
+        if (ee && ce.inSet) ce.sh.forEach((x, k) => { if (x === 'вечер') num.push(ce.lo + k + 1); });
+        nums = num.length > 1 ? `${Math.min(...num)}·${Math.max(...num)}` : num[0] ?? '';
+        doneToday = d === TODAY && mm && !ee; // сегодня только утренняя доставка — она уже была
+        if (mm || ee) {
+          cls.push(mm && ee ? 'sh-b' : mm ? 'sh-m' : 'sh-e');
+          if (!((mm && cm.inSet) || (ee && ce.inSet))) cls.push('ghost');
+          if ((mm && cm.ov) || (ee && ce.ov)) cls.push('ov');
+          ci = [['утро', d - 1, mm], ['вечер', d, ee]].filter(x => x[2]).map(([x, c]) => {
+            const n = courierOn({ ...o, courDays: st.courDays }, c, x) || '', own = !!st.courDays[isoOf(d) + '|' + x];
+            return `<b class="ci${own ? ' own' : ''}" style="background:${n ? personColor('couriers', n) : '#d64541'}" title="${x} ${fmtS(d)}: ${esc(n || 'без курьера')}">${esc(n ? abbr(n) : '?')}</b>`;
+          }).join('');
+        }
       }
       if (fz) cls.push('fz');
-      if (skipSet.has(d)) cls.push('sk');
-      if (o.dayMode !== 'custom' && !dayAllowed(o, d)) cls.push('wo');
-      if (d < TODAY) cls.push('past');
+      if (sk) cls.push('sk');
+      if (wo) cls.push('wo');
+      if (d < TODAY || doneToday) cls.push('past');
       if (d === TODAY) cls.push('today');
-      if (d === pend.end && pend.list.length) cls.push('end');
-      if (d === pend.start) cls.push('st');
+      if (d === dTo && pend.list.length) cls.push('end');
+      if (d === dFrom) cls.push('st');
       if (sel && d >= sel[0] && d <= sel[1]) cls.push('sel');
       const no = nums;
       cells += `<button type="button" class="${cls.join(' ')}" data-day="${d}" title="${fmt(d)}, ${WD_FULL[wdOf(d)]}${no ? ' · доставка №' + no : ''}${fz ? ' · заморозка' : ''}">
@@ -2346,7 +2374,7 @@ function openFreeze(o, mode = 'range') {
     const nowFz = rs.find(([a, b]) => TODAY >= a && TODAY <= b);
     const PAINTS = [['mfull', 'Утро — вся ячейка', 'sh-m'], ['mhalf', 'Утро — левая половина', 'sh-lh'], ['efull', 'Вечер — вся ячейка', 'sh-e'], ['ehalf', 'Вечер — правая половина', 'sh-rh'], ['erase', 'Как в заказе', '']];
     const hint = st.mode === 'shifts'
-      ? 'Выберите кисть и закрашивайте дни (можно водить мышью с зажатой кнопкой). <b>Жёлтый — утро, коричневый — вечер</b>; левая жёлтая + правая коричневая половины — в этот день оба пакета (утро и вечер). Каждый пакет — один день программы.'
+      ? 'Выберите кисть и закрашивайте дни (можно водить мышью с зажатой кнопкой). <b>Жёлтый — утро, коричневый — вечер</b>; левая жёлтая + правая коричневая половины — в этот день оба пакета (утро и вечер). Каждый пакет — один день программы. <b>Дни — даты доставки:</b> утренний пакет (его готовят накануне) стоит в календаре на день, когда его привозят утром.'
       : st.mode === 'range'
       ? (st.anchor === null ? 'Нажмите на <b>первый</b> день заморозки, затем на <b>последний</b>. Клик по голубому дню снимает эту заморозку целиком.'
         : `Начало: <b>${fmt(st.anchor)}</b> — теперь нажмите на последний день заморозки. <a data-cm="cancel">Отменить</a>`)
@@ -2366,7 +2394,7 @@ function openFreeze(o, mode = 'range') {
       </div>
       <div class="cal-hint">${hint}</div>
       ${st.mode === 'shifts' && canCour ? `<div class="cal-hint"><b>Курьер:</b> выберите курьера и нажимайте на дни — его инициал появится на пакете.
-        ☀ утренний пакет курьер везёт на следующее утро, ☾ вечерний — в тот же вечер. Постоянный курьер — <b>${esc(o.courier || 'не назначен')}</b>.</div>
+        ☀ утренний пакет курьер везёт утром этого дня, ☾ вечерний — вечером этого дня. Постоянный курьер — <b>${esc(o.courier || 'не назначен')}</b>.</div>
       <div class="row paint-tools"><div class="chips">${[['both', 'Все пакеты дня'], ['утро', '☀ Утро'], ['вечер', '☾ Вечер']].map(([v, l]) => `<button class="${st.cshift === v ? 'on' : ''}" data-cm="cshift" data-v="${v}">${l}</button>`).join('')}</div>
         ${curNames.map(n => `<button class="paint-btn ${st.paint === 'c:' + n ? 'on' : ''}" data-cm="paint" data-v="c:${esc(n)}"><i class="pb ci-pb" style="background:${personColor('couriers', n)}">${esc(abbr(n))}</i>${esc(n)}${n === o.courier ? ' (постоянный)' : ''}</button>`).join('')}
         <button class="paint-btn ${st.paint === 'c:' ? 'on' : ''}" data-cm="paint" data-v="c:"><i class="pb"></i>Курьер как обычно</button></div>` : ''}
