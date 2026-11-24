@@ -4270,6 +4270,7 @@ function viewMenu() {
       title="ИИ сверит блюда каждого клиента с его аллергиями и исключениями">${S.aiCheckBusy ? 'Проверяю…' : 'Проверить аллергии'}</button>
     <button class="btn btn-sm" data-act="menuCopyPrev">↺ Скопировать с прошлого дня</button>
   </div>
+  <div id="qrSyncBox">${qrSyncHtml(D)}</div>
   <div id="cfBox">${conflictsCard(D)}</div>`;
   const mealInputs = f.meals.map(m => {
     const k = md.k[m.id] || ['', '', '', ''];
@@ -4710,6 +4711,15 @@ function pickTheme(root) {
     const sh = $('#prSheets', root);
     if (sh && S.lblCount) sh.textContent = Math.ceil(S.lblCount / labelPer(q.checked));
   }
+  const pub = $('#qrPub', root);
+  if (pub) pub.textContent = S.qrPub || ''; // ответ сайта мог прийти раньше, чем открылось окно
+  const m = $('[name="lqrm"]:checked', root);
+  if (m && (m.value === 'off') !== qrOffline()) {
+    db.settings.qrOffline = m.value === 'off';
+    persist();
+    const sl = $('.qr-slots', root);
+    if (sl) sl.innerHTML = qrSlotsHtml(S.qrProgs || []);
+  }
   return v;
 }
 const LABEL_THEME_CSS = Object.entries(LABEL_LOOK).map(([k, [bg, ac, op]]) =>
@@ -4751,7 +4761,7 @@ const labelLogo = () => {
   return `<div class="lb-logo" data-notr><span>${lat ? 'EliHud' : 'ЕлиХуд'}</span><span class="leaf-e">${lat ? 'e' : 'е'}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20C4 10 10 4 21 3c0 11-6 17-15 17z" fill="#5da83c"/><path d="M5 19C9 14 13 10 18 6" stroke="#fff" stroke-width="1.4" fill="none" stroke-linecap="round"/></svg></span><span>${lat ? 'li' : 'ли'}</span></div>`;
 };
 // QR-код с меню дня — программа делает его сама из «Меню дня» (стандарт, свой на каждый калораж)
-const qrBox = prog => { const q = (S.qrCur || {})[prog]; return `<div class="lb-qr">${q || '<div class="lb-qr-empty">нет меню</div>'}</div>`; };
+const qrBox = prog => { const q = qrCur()[prog]; return `<div class="lb-qr">${q || '<div class="lb-qr-empty">нет меню</div>'}</div>`; };
 // текст меню: его же видно, если отсканировать QR без страницы меню
 function menuQrText(D, prog) {
   const f = db.menu.formats.find(x => x.kbju);
@@ -4774,7 +4784,9 @@ function menuQrText(D, prog) {
   lines.push('', String(f.footer || 'Приятного аппетита!').split('\n')[0]);
   return lines.join('\n');
 }
-// режим «ссылка»: меню сжимается и кладётся в саму ссылку после # — на сайт оно не отправляется
+// режим «ссылка»: в QR только короткая ссылка (дата/калораж) — код крупный и читается с пакета,
+// а меню лежит на сайте меню файлом d/ГГГГ-ММ-ДД.json (выкладывается при печати бирок и кнопкой в «Меню дня»)
+// режим «Оффлайн-КУАРКОД»: всё меню сжато прямо в ссылке после # — открывается без интернета, но код мелкий и плотный
 let CP1251 = null;
 function toCp1251(text) {
   if (!CP1251) {
@@ -4790,28 +4802,80 @@ async function deflateRaw(bytes) {
 }
 const b64url = u8 => btoa(String.fromCharCode(...u8)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const menuUrl = () => String(db.settings.menuUrl || '').trim().replace(/#.*$/, '');
-async function menuQrPayload(text) {
-  return menuUrl() ? menuUrl() + '#z1.' + b64url(await deflateRaw(toCp1251(text))) : text;
+const qrOffline = () => !!db.settings.qrOffline;
+const qrCur = () => (qrOffline() ? S.qrOff : S.qrOn) || {};
+const menuQrPayload = async (D, p, text, off) => (!menuUrl() ? text
+  : off ? menuUrl() + '#z1.' + b64url(await deflateRaw(toCp1251(text))) : `${menuUrl()}#${isoOf(D)}/${p}`);
+// меню на все калоражи дня — то, что выкладывается на сайт
+function menuDayTexts(D) {
+  const f = db.menu.formats.find(x => x.kbju);
+  const md = f ? menuVariant(D, f.id, '', false) : {};
+  const out = {};
+  for (const p of uniq([...db.lists.programs.filter(isNumProg), ...Object.keys(md.kp || {})]).sort(progCmp)) {
+    const t = menuQrText(D, p);
+    if (t) out[p] = t;
+  }
+  return out;
 }
+const textSig = s => { let h = 5381; for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36); };
+const qrBlock = (D, create) => { const f = db.menu.formats.find(x => x.kbju); return f ? menuBlock(D, f.id, create) : null; };
+// меню на сайте отстало от «Меню дня»: есть что выложить, а выложено другое (или ещё ничего)
+function qrStale(D) {
+  if (!menuUrl()) return false;
+  const m = menuDayTexts(D);
+  return Object.keys(m).length > 0 && (qrBlock(D, false) || {}).qrSig !== textSig(JSON.stringify(m));
+}
+async function publishMenuQr(D) {
+  const menus = menuDayTexts(D);
+  if (!menuUrl() || !Object.keys(menus).length) return;
+  await api('POST', '/api/menuday', JSON.stringify({ date: isoOf(D), menus }));
+  qrBlock(D, true).qrSig = textSig(JSON.stringify(menus));
+  persist();
+}
+// кнопка над «Меню дня» (формат с КБЖУ): меню поменяли — выложить на сайт, QR на бирках сразу покажут новое
+function qrSyncHtml(D) {
+  if (!(menuFormat(S.mf) || {}).kbju || !qrStale(D)) return '';
+  return `<div class="warn no-print" style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+    <span>Меню изменилось — по QR-кодам клиенты пока видят старое.</span><span style="flex:1"></span>
+    <button class="btn btn-green" data-act="qrSync" ${S.qrSyncBusy ? 'disabled' : ''}>${S.qrSyncBusy ? 'Сохраняю…' : `Сохранить изменения QR-код на ${fmt(D).slice(0, 5)}`}</button></div>`;
+}
+function refreshQrSync() { const el = $('#qrSyncBox'); if (el) el.innerHTML = qrSyncHtml(S.md); }
 // сгенерировать QR на все нужные калоражи; вернёт калоражи, на которые меню не внесено
+// готовятся оба режима сразу — переключатель в окне печати меняет коды без ожидания
 async function prepareMenuQr(D, progs) {
-  S.qrCur = {};
+  S.qrOn = {}; S.qrOff = {}; S.qrProgs = progs;
   const missing = [];
   for (const p of progs) {
     const t = menuQrText(D, p);
     if (!t) { missing.push(p); continue; }
-    try { S.qrCur[p] = QR.svg(await menuQrPayload(t), { ecl: 'L', quiet: 4 }); } catch { missing.push(p); } // белая рамка по стандарту — 4 клетки
+    // белая рамка по стандарту — 4 клетки; оффлайн-код может не влезть (слишком длинное меню) — тогда у бирки «нет меню»
+    for (const off of [false, true]) {
+      try { (off ? S.qrOff : S.qrOn)[p] = QR.svg(await menuQrPayload(D, p, t, off), { ecl: 'L', quiet: 4 }); } catch { /* не влезло */ }
+    }
+    if (!qrCur()[p]) missing.push(p);
+  }
+  S.qrPub = '';
+  if (menuUrl() && progs.length > missing.length) {
+    S.qrPub = 'Выкладываю меню на сайт…';
+    publishMenuQr(D).then(() => { S.qrPub = 'Меню выложено на сайт — QR-коды откроют его.'; }, e => {
+      S.qrPub = `Не удалось выложить меню на сайт: ${e.message}. QR-коды не откроют меню, пока его не выложат (кнопка в «Меню дня»).`;
+    }).then(() => { const el = $('#qrPub'); if (el) el.textContent = S.qrPub; });
   }
   return missing;
 }
 function qrInfoHtml(D, progs, missing) {
   return `<div class="qr-tool mt"><b>QR-код с меню — делается автоматически</b>
-    <div class="muted small">Из «Меню дня» на ${fmt(D)}: у каждого калоража свой QR с блюдами и КБЖУ. Поменяли меню — просто откройте печать бирок заново.
-      ${menuUrl() ? `При сканировании откроется карточка меню (страница ${esc(menuUrl())}).`
+    ${menuUrl() ? `<div class="row small" style="gap:14px;margin:6px 0">
+      <label><input type="radio" name="lqrm" value="on" ${qrOffline() ? '' : 'checked'}> <b>Онлайн-КУАРКОД</b> — крупный, читается сразу; меню берётся с сайта (нужен интернет)</label>
+      <label><input type="radio" name="lqrm" value="off" ${qrOffline() ? 'checked' : ''}> <b>Оффлайн-КУАРКОД</b> — меню внутри кода, без интернета; код мелкий, хуже читается</label></div>` : ''}
+    <div class="muted small">Из «Меню дня» на ${fmt(D)}: у каждого калоража свой QR.
+      ${menuUrl() ? `При сканировании откроется карточка меню (страница ${esc(menuUrl())}). Онлайн-QR: поменяли меню после печати — нажмите «Сохранить изменения QR-код» в «Меню дня», бирки перепечатывать не нужно. Оффлайн-QR: после правки меню бирки надо перепечатать.
+      <div id="qrPub" style="margin-top:4px;font-weight:600">${esc(S.qrPub || '')}</div>`
     : 'Сейчас при сканировании телефон покажет меню текстом. Чтобы открывалась красивая карточка — укажите адрес страницы меню в «Админ» → «Настройки и установщик».'}</div>
     ${missing.length ? `<div class="warn mt">Нет меню на ${fmt(D)}: ${missing.map(progLabel).join(', ')} — впишите блюда в «Меню дня», иначе на бирке будет пустой квадрат.</div>` : ''}
-    <div class="qr-slots">${progs.map(p => `<div class="qr-slot">${S.qrCur[p] || '<span class="qr-ph">—</span>'}<span class="qr-l">${esc(progLabel(p))}</span></div>`).join('')}</div></div>`;
+    <div class="qr-slots">${qrSlotsHtml(progs)}</div></div>`;
 }
+const qrSlotsHtml = progs => progs.map(p => `<div class="qr-slot">${qrCur()[p] || '<span class="qr-ph">—</span>'}<span class="qr-l">${esc(progLabel(p))}</span></div>`).join('');
 const labelQrOn = () => !db.settings.labelNoQr;
 // картинка темы — та же, что на карточке меню, в левом нижнем углу бирки
 const labelArt = th => (LABEL_LOOK[th] ? `<div class="lb-bg"><svg viewBox="0 0 148 210" preserveAspectRatio="xMinYMax meet" aria-hidden="true"><g class="lb-art">${MENU_ART[th]()}</g></svg></div>` : '');
@@ -4901,7 +4965,7 @@ async function printBlankLabels() {
         <option value="${BLANK_STD}" ${r.prog === BLANK_STD ? 'selected' : ''}>Стандарт (с QR)</option>
         ${others.map(p => `<option value="${esc(p)}" ${r.prog === p ? 'selected' : ''}>${esc(progLabel(p))}</option>`).join('')}</select></td>
       <td>${r.prog === BLANK_STD ? `<select class="input" data-b="kcal" data-i="${i}" style="padding:3px 8px"><option value="">— калораж * —</option>
-        ${kcals.map(k => `<option value="${k}" ${String(r.kcal) === k ? 'selected' : ''}>${k} ккал${(S.qrCur || {})[k] ? '' : ' · нет меню'}</option>`).join('')}</select>` : '<span class="muted small">без QR</span>'}</td>
+        ${kcals.map(k => `<option value="${k}" ${String(r.kcal) === k ? 'selected' : ''}>${k} ккал${qrCur()[k] ? '' : ' · нет меню'}</option>`).join('')}</select>` : '<span class="muted small">без QR</span>'}</td>
       <td class="right"><input class="input" type="number" min="0" max="240" data-b="n" data-i="${i}" value="${r.n}" style="width:80px"></td>
       <td><button type="button" class="btn btn-icon btn-sm btn-red" data-b="del" data-i="${i}" title="Убрать">✕</button></td></tr>`).join('')
       || '<tr><td colspan="4" class="empty">Добавьте программу</td></tr>'}</tbody></table>
@@ -5803,6 +5867,7 @@ ${st.text.trim()}
 
 function touchMenuFormats() { db.menu.formatsAt = localIso(); }
 function refreshMenuPreview() {
+  refreshQrSync();
   const el = $('#menuPreview');
   if (!el) return;
   const f = menuFormat(S.mf);
@@ -8002,6 +8067,12 @@ const ACT = {
   aiCalc: () => aiCalcKbju({}),
   menuFormat: d => { S.md += mdOff(menuFormat(d.v)) - mdOff(menuFormat(S.mf)); S.mf = d.v; S.mv = ''; render(); }, // день готовки в поле даты не меняется
   menuVariant: d => { S.mv = d.v; render(); },
+  qrSync: async () => {
+    S.qrSyncBusy = true; refreshQrSync();
+    try { await publishMenuQr(S.md); toast('Меню выложено — QR-коды на бирках покажут новое меню', 'good'); }
+    catch (e) { toast('Не удалось выложить меню: ' + e.message, 'bad', 8000); }
+    S.qrSyncBusy = false; refreshQrSync();
+  },
   menuCopyPrev: () => {
     const f = menuFormat(S.mf);
     const prev = menuBlock(S.md - 1, f.id, false);
