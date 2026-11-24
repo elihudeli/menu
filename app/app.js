@@ -585,6 +585,8 @@ function couriersActive() {
 }
 const courierNames = (v = '') => uniq([...(S.allCour ? db.lists.couriers : couriersActive()), ...(v ? [v] : [])]).sort(ruCmp);
 const courOpts = (v = '') => opts(courierNames(v), v);
+// кому передают (постоянно или временно): все курьеры справочника, даже без заказов — иначе нового или заново добавленного не выбрать
+const courAll = (v = '') => opts(uniq([...db.lists.couriers, ...(v ? [v] : [])]).sort(ruCmp), v);
 // основной курьер строки доставки (в строке может стоять заменяющий)
 const mainCour = r => (r.subFrom !== undefined ? r.subFrom : r.o.courier) || '';
 
@@ -1131,7 +1133,7 @@ function clientModalParts(cl) {
         <b>Время</b><span>${esc(o.timeAt || o.time)}${isOpen && !o.timeAt ? ` <button class="btn btn-sm" data-act="flipTime" data-id="${esc(o.id)}" title="Перевести заказ на другую смену доставки">${o.time === 'вечер' ? '☀ на утро' : '☾ на вечер'}</button>` : ''}</span>
         ${o.company ? `<b>Компания</b><span>${esc(o.company)}</span>` : ''}
         ${o.persons ? `<b>Человек</b><span>${o.persons}</span>` : ''}
-        <b>Постоянный курьер</b><span>${can('couriers.assign') ? `<select class="input" style="max-width:200px;padding:3px 6px" data-bind="dcour" data-id="${esc(o.id)}" title="Меняется во всех текущих и будущих заказах клиента"><option value="">— без курьера —</option>${courOpts(o.courier || '')}</select>` : chip('couriers', o.courier)}</span>
+        <b>Постоянный курьер</b><span>${can('couriers.assign') ? `<select class="input" style="max-width:200px;padding:3px 6px" data-bind="dcour" data-id="${esc(o.id)}" title="Меняется во всех текущих и будущих заказах клиента"><option value="">— без курьера —</option>${courAll(o.courier || '')}</select>` : chip('couriers', o.courier)}</span>
         <b>Временный курьер</b><span>${subsList().filter(r => subLive(r) && (r.oid === o.id || (!r.oid && r.from === (o.courier || '')))).map(r => `<div>${chip('couriers', r.to)} <span class="muted small">${esc(subText(r))}${r.oid ? '' : ' · замена на всех клиентов курьера'}</span></div>`).join('') || '<span class="muted">нет</span>'}
           <button class="btn btn-sm" data-act="courierSubs" data-o="${esc(o.id)}">+ Временный курьер</button></span>
         <b>Ответственный</b><span>${chip('managers', o.manager)}</span>
@@ -2985,7 +2987,7 @@ function openCourierMove() {
   openModal({
     title: `Передать навсегда — ${ids.length} клиентов`,
     body: `<div class="muted small" style="margin-bottom:10px">Меняется постоянный курьер во всех текущих и будущих заказах выбранных клиентов. На время — кнопка «Заменить на время…».</div>
-      <label class="field"><span>Новый постоянный курьер</span><select class="input" name="to"><option value="">— выберите —</option>${courOpts('')}</select></label>`,
+      <label class="field"><span>Новый постоянный курьер</span><select class="input" name="to"><option value="">— выберите —</option>${courAll('')}</select></label>`,
     foot: '<button class="btn" data-act="closeModal">Отмена</button><button class="btn btn-green" data-m="ok">Передать навсегда</button>',
     onMount(root) {
       $('[data-m="ok"]', root).addEventListener('click', () => {
@@ -3138,7 +3140,7 @@ function viewDelivery() {
   const q = nameKey(S.dq);
   const hit = r => !q || q.split(' ').every(w => dqKey(r).includes(w));
   // курьер в строке: постоянный меняется тут же (навсегда), временный — пометкой
-  const courCell = r => `<td class="nowrap dl-cour" data-act="noop">${sel ? `<select class="input no-print" style="padding:3px 6px;max-width:150px" data-bind="dcour" data-id="${esc(r.o.id)}" title="Постоянный курьер — меняется навсегда"><option value="">— курьер —</option>${courOpts(mainCour(r))}</select>
+  const courCell = r => `<td class="nowrap dl-cour" data-act="noop">${sel ? `<select class="input no-print" style="padding:3px 6px;max-width:150px" data-bind="dcour" data-id="${esc(r.o.id)}" title="Постоянный курьер — меняется навсегда"><option value="">— курьер —</option>${courAll(mainCour(r))}</select>
       <span class="print-only">${esc(mainCour(r) || '—')}</span>` : chip('couriers', mainCour(r), NOCOUR())}${r.subFrom !== undefined ? `<div class="small">временно: ${chip('couriers', r.o.courier, 'без курьера')}</div>` : ''}</td>`;
   const part = (list, t) => list.length ? `<tr class="group"><td colspan="${sel ? 10 : 9}">${t === 'вечер' ? 'ВЕЧЕР ' + fmtS(D) : 'УТРО ' + fmtS(D + 1)} — ${list.length}</td></tr>`
     + list.map((r, i) => `<tr class="click ${S.dsel.has(r.o.id) ? 'dsel-on' : ''}" data-act="openClient" data-id="${esc(r.cl.id)}" data-q="${esc(dqKey(r))}" ${hit(r) ? '' : 'hidden'}>
@@ -9055,7 +9057,7 @@ function openSubs(oid = '', preset = null) {
           <div class="sub-pick" id="subPick"></div></div>`}
         <div class="field full"><span>Какие доставки</span><div class="chips" id="subShift">${[['', 'Все доставки'], ['утро', 'Заменить утренние доставки'], ['вечер', 'Заменить вечерние доставки']]
     .map(([k, l]) => `<button type="button" data-sh="${k}" class="${k === st.shift ? 'on' : ''}">${l}</button>`).join('')}</div></div>
-        <label class="field"><span>${o ? 'Временный курьер' : 'Кто заменяет'}</span><select class="input" name="to"><option value="">— выберите —</option>${courOpts('')}</select></label>
+        <label class="field"><span>${o ? 'Временный курьер' : 'Кто заменяет'}</span><select class="input" name="to"><option value="">— выберите —</option>${courAll('')}</select></label>
         <div class="field full"><span>Когда</span><div class="chips" id="subKind">${[['week', 'По дням недели'], ['range', 'На период'], ['dates', 'Отдельные даты']]
     .map(([k, l]) => `<button type="button" data-k="${k}" class="${k === st.kind ? 'on' : ''}">${l}</button>`).join('')}</div></div>
         <div class="field full" data-show="week"><span>Дни недели (каждую неделю)</span><div class="chips" id="subWd">${WD_NAMES.map((l, i) => `<button type="button" data-i="${i}">${l}</button>`).join('')}</div></div>
