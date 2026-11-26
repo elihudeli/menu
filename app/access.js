@@ -96,12 +96,12 @@ const ACT_PERM = {
   tagQuick: d => (d.k === 'ctags' ? 'couriers' : 'clients.edit'),
   groupAdd: 'admin.lists', groupRename: 'admin.lists', groupDel: 'admin.lists', groupPerson: 'admin.lists', groupPersonEdit: 'admin.lists', groupPersonDel: 'admin.lists',
   roleAdd: 'roles', roleDel: 'roles', installerDialog: 'installer', wipeBase: 'roles', devBlock: 'roles', devPin: 'roles', devRemove: 'roles', devUserDel: 'roles', devRestore: 'roles', devPerms: 'roles', cloudRestore: 'files',
-  cloudSave: 'cloud', cloudSwitch: 'cloud', cloudForce: 'cloud.force', menuSitePublish: 'cloud', cloudOff: 'cloud', cloudPublish: 'publish',
+  cloudSave: 'cloud', cloudSwitch: 'cloud', cloudForget: 'cloud', cloudForce: 'cloud.force', menuSitePublish: 'cloud', cloudOff: 'cloud', cloudPublish: 'publish',
 };
 // эти действия ничего не меняют в базе — их можно делать, даже когда программа у другого
 const NONMUT = new Set(['mxShift', 'delivNews', 'mxSet', 'rolePreview', 'asExit', 'dselAll', 'addrNewsOk', 'dselClear', 'dcToggle', 'dcAll', 'devicesLoad', 'devBlock', 'devPerms', 'setLang', 'setTheme', 'setZoom', 'theme', 'cloudBackupsLoad', 'cloudBackupNow', 'installerDialog', 'courierLink', 'copyCourier', 'courierBase', 'exportDelivery', 'labels', 'exportPacking', 'exportBoth', 'pdgPng', 'printPage', 'printPacking', 'menuPrint',
   'menuPrintAll', 'menuPdf', 'exportClients', 'clientsTemplate', 'exportJson', 'exportXlsx', 'openFolder', 'backupNow', 'makeInstaller', 'aiEditKey',
-  'openMenuFiles', 'cloudSave', 'cloudSwitch', 'cloudForce', 'cloudOff', 'aiPick', 'gtFmt', 'gtSel', 'mcRec', 'cloudPublish']);
+  'openMenuFiles', 'cloudSave', 'cloudSwitch', 'cloudForget', 'cloudForce', 'cloudOff', 'aiPick', 'gtFmt', 'gtSel', 'mcRec', 'cloudPublish']);
 const BIND_PERM = {
   tagIn: 'clients.edit', ctagIn: 'couriers', dcour: 'couriers.assign', noCourName: 'couriers.list', yandexMaps: 'couriers', sceneHide: 'roles', progKitchen: 'admin.lists',
   holDefault: 'admin.lists', holName: 'admin.lists', holAll: 'admin.lists',
@@ -218,9 +218,16 @@ const ACCESS_ACT = {
       catch (e) { toast('Не удалось: ' + e.message, 'bad', 10000); }
       S.cloudBusy = false; render();
     }),
+  cloudForget: d => confirmBox('Убрать облако из списка', `Убрать <b>${esc(d.v)}</b> из запомненных облаков? Ключ от него на этом компьютере удалится. Само хранилище на GitHub не трогается.`,
+    'Убрать', async () => {
+      try { S.sync = await api('POST', '/api/sync/forget', JSON.stringify({ repo: d.v })); toast('Убрано: ' + d.v, 'ok'); }
+      catch (e) { toast('Не удалось: ' + e.message, 'bad', 10000); }
+      render();
+    }),
   menuSitePublish: async () => {
     const repo = $('#msRepo').value.trim(), token = $('#msToken').value.trim();
     if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) { toast('Укажите хранилище в виде организация/имя', 'bad'); return; }
+    S.msRepo = repo; // поле не должно возвращаться к прежнему адресу при перерисовке и ошибке
     S.msBusy = true; render();
     try {
       const r = await api('POST', '/api/menusite', JSON.stringify({ repo, token }));
@@ -868,6 +875,8 @@ const GUIDE_MENU = [
 // адрес вида https://организация.github.io/menu/ → хранилище «организация/menu» (страницу выкладывали вручную)
 function menuRepoGuess() {
   const m = String(db.settings.menuUrl || '').match(/^https:\/\/([\w-]+)\.github\.io\/([\w.-]*)/i);
+  const org = String((S.sync || {}).repo || '').split('/')[0];
+  if (org && (!m || m[1].toLowerCase() !== org.toLowerCase())) return `${org}/menu`; // облако другой организации — и страница меню её
   return m ? `${m[1]}/${m[2] || m[1] + '.github.io'}` : '';
 }
 function menuSiteCard() {
@@ -878,7 +887,7 @@ function menuSiteCard() {
       Сюда же выкладывается iOS / Сайт версия программы (папка app, для iPhone, iPad и MacBook) — ссылки для них делает «Установщик». Данных клиентов здесь нет: база приходит из закрытого облака по личной ссылке.</div>
     <div class="kv"><b>Адрес для QR</b><span>${esc(db.settings.menuUrl || '— (в QR будет меню текстом)')}</span>
       <b>Хранилище</b><span>${esc(m.repo || 'не подключено из программы')}</span></div>
-    <div class="form mt"><label class="field full"><span>Хранилище страницы меню</span><input class="input" id="msRepo" value="${esc(m.repo || menuRepoGuess())}" placeholder="организация/menu"></label>
+    <div class="form mt"><label class="field full"><span>Хранилище страницы меню</span><input class="input" id="msRepo" value="${esc(S.msRepo || m.repo || menuRepoGuess())}" placeholder="организация/menu"></label>
       <label class="field full"><span>Ключ доступа</span><input class="input" type="password" id="msToken" autocomplete="off" placeholder="${m.hasKey ? 'свой ключ задан — впишите новый, чтобы заменить' : 'пусто — ключ облака (если ему дан доступ и к этому хранилищу)'}"></label></div>
     <div class="actions"><button class="btn btn-green" data-act="menuSitePublish" ${S.msBusy ? 'disabled' : ''}>${S.msBusy ? 'Выкладываю…' : 'Выложить страницу меню'}</button></div>
     ${guide('Как перенести или подключить страницу меню — пошагово', GUIDE_MENU)}</div>`;
@@ -910,7 +919,7 @@ function viewCloud() {
       ${hiddenViews().map(v => `<div class="dl-sum-row">${esc(TAB_NAMES[v] || v)}<button class="btn btn-sm" data-act="showTab" data-v="${esc(v)}">Показать</button></div>`).join('')}</div>` : ''}
     ${can('cloud') ? `<div class="card"><h2>Подключение к GitHub</h2>
       <div class="muted small" style="margin-bottom:10px">Закрытое хранилище организации ЕлиХудели и ключ доступа к нему. Ключ хранится только на этом компьютере.</div>
-      ${(st.clouds || []).length > 1 ? `<div class="chips wrap" style="margin-bottom:10px">${st.clouds.map(r => `<button class="${r === st.repo ? 'on' : ''}" data-act="cloudSwitch" data-v="${esc(r)}" ${S.cloudBusy || r === st.repo ? 'disabled' : ''}>${esc(r)}</button>`).join('')}</div>` : ''}
+      ${(st.clouds || []).length > 1 ? `<div class="chips wrap" style="margin-bottom:10px">${st.clouds.map(r => `<button class="${r === st.repo ? 'on' : ''}" data-act="cloudSwitch" data-v="${esc(r)}" ${S.cloudBusy || r === st.repo ? 'disabled' : ''}>${esc(r)}</button>${r === st.repo ? '' : `<button data-act="cloudForget" data-v="${esc(r)}" title="Убрать из списка" ${S.cloudBusy ? 'disabled' : ''}>✕</button>`}`).join('')}</div>` : ''}
       <div class="form"><label class="field full"><span>Хранилище (впишите другое — облако сменится; ключи от прежних запоминаются)</span><input class="input" id="ghRepo" value="${esc(st.repo || 'elihudeli/office')}"></label>
         <label class="field full"><span>Ключ доступа (fine-grained token)</span><input class="input" type="password" id="ghToken" autocomplete="off" placeholder="${st.connected ? 'ключ задан — впишите новый, чтобы заменить' : 'github_pat_…'}"></label></div>
       <div class="actions"><button class="btn btn-green" data-act="cloudSave" ${S.cloudBusy ? 'disabled' : ''}>${S.cloudBusy ? 'Подключаю…' : st.connected ? 'Сохранить' : 'Подключить облако'}</button>
