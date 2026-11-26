@@ -20,22 +20,39 @@
   const mem = new Map();
   let idb = null;
   const idbReq = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
-  async function storeOpen() {
+  async function idbOpen() {
     const r = indexedDB.open('eh-office', 1);
     r.onupgradeneeded = () => r.result.createObjectStore('files');
-    idb = await idbReq(r);
-    const tx = idb.transaction('files');
-    const keys = await idbReq(tx.objectStore('files').getAllKeys());
-    const vals = await idbReq(idb.transaction('files').objectStore('files').getAll());
+    const d = await idbReq(r);
+    d.onclose = () => { if (idb === d) idb = null; };
+    d.onversionchange = () => d.close();
+    return d;
+  }
+  // Safari на iPhone сам закрывает соединение («The database connection is closing») — открываем заново и повторяем
+  async function idbDo(mode, fn) {
+    for (let i = 0; ; i++) {
+      try {
+        if (!idb) idb = await idbOpen();
+        return await idbReq(fn(idb.transaction('files', mode).objectStore('files')));
+      } catch (e) {
+        if (i >= 2 || !(e && (e.name === 'InvalidStateError' || /clos/i.test(e.message || '')))) throw e;
+        idb = null;
+        await new Promise(r => setTimeout(r, 300));
+      }
+    }
+  }
+  async function storeOpen() {
+    const keys = await idbDo('readonly', s => s.getAllKeys());
+    const vals = await idbDo('readonly', s => s.getAll());
     keys.forEach((k, i) => mem.set(k, vals[i]));
     try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch { /* не важно */ }
   }
   const store = {
     read: n => (mem.has(n) ? mem.get(n) : null),
     json(n) { try { return JSON.parse(mem.get(n) || '{}') || {}; } catch { return {}; } },
-    async write(n, v) { mem.set(n, v); await idbReq(idb.transaction('files', 'readwrite').objectStore('files').put(v, n)); },
+    async write(n, v) { mem.set(n, v); await idbDo('readwrite', s => s.put(v, n)); },
     writeJson(n, o) { return this.write(n, JSON.stringify(o)); },
-    async del(n) { mem.delete(n); await idbReq(idb.transaction('files', 'readwrite').objectStore('files').delete(n)); },
+    async del(n) { mem.delete(n); await idbDo('readwrite', s => s.delete(n)); },
   };
 
   /* ---------------------------------------------------------------- байты: base64, sha, gzip */
